@@ -15,6 +15,7 @@ import type { Application, ApplicationStatus, Connection, FunctionArea, JobPost 
 import { connectionBadge, connectionLine } from '../core/disclosure.ts';
 import { postAge } from '../core/freshness.ts';
 import { Button, Chip, EmptyState, Tabs, cx } from './primitives.tsx';
+import { PostComposer } from './PostComposer.tsx';
 
 export interface BoardProps {
   now: number;
@@ -179,6 +180,8 @@ export function Board({ now }: BoardProps) {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportedIds, setReportedIds] = useState<ReadonlySet<string>>(new Set());
 
+  const [composerOpen, setComposerOpen] = useState(false);
+
   const viewer = getCurrentMember();
   const posts = listPosts(now, sort);
   const disclosureFields = applyDisclosureFields();
@@ -241,6 +244,21 @@ export function Board({ now }: BoardProps) {
 
   return (
     <div className="flex flex-col gap-4 p-6">
+      {/*
+       * Outside the filter card and outside the table below — never inside
+       * the Posted <th> where the sort control lives (Board.tsx, Posted
+       * column header) and never inside the `filtered.length === 0` branch,
+       * which replaces the whole table with `EmptyState` below. A member who
+       * has over-filtered the board down to nothing must still be able to
+       * post a job; this row is reachable regardless of what the filters do.
+       */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-lg font-semibold text-stone-900">Job board</h1>
+        <Button type="button" variant="primary" onClick={() => setComposerOpen(true)}>
+          Post a job
+        </Button>
+      </div>
+
       <div className="flex flex-wrap gap-4 rounded-xl bg-white p-4 shadow-sm ring-1 ring-stone-900/5">
         <FilterGroup label="Function">
           <FilterChip active={fn === ALL} onClick={() => setFn(ALL)}>
@@ -468,6 +486,12 @@ export function Board({ now }: BoardProps) {
           </table>
         </div>
       )}
+
+      <PostComposer
+        open={composerOpen}
+        onClose={() => setComposerOpen(false)}
+        onPublished={() => setComposerOpen(false)}
+      />
     </div>
   );
 }
