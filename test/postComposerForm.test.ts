@@ -105,3 +105,46 @@ describe('mergeParsedIntoForm — accepting a parse', () => {
     expect(afterStronger.companySource).not.toBeNull();
   });
 });
+
+/**
+ * Task 9 fix round 2 (controller-applied).
+ *
+ * `isRemote` was the one field the round-1 fix missed, because it is the only
+ * parsed value with no `*Source` of its own. `next.isRemote = remote ||
+ * f.isRemote` could turn the tick ON but never OFF, so a Remote role followed
+ * by an onsite one published the onsite role marked Remote — the same residue
+ * class round 1 closed everywhere else. It borrows `locationSource` as its
+ * provenance, since the two are only ever written together.
+ */
+describe('isRemote provenance', () => {
+  const REMOTE_ROLE = 'Hiring a Product Manager at Zeta. Fully Remote. 4-7 yrs. Mail careers@zeta.com';
+  const ONSITE_ROLE = 'Looking for a Brand Manager in Mumbai. 3-6 years experience. Ping me on 98200 11223';
+
+  test('a newer paste with an onsite location clears a Remote tick the previous paste set', () => {
+    const afterRemote = mergeParsedIntoForm(EMPTY_FORM, REMOTE_ROLE, parsePost(REMOTE_ROLE));
+    expect(afterRemote.isRemote).toBe(true);
+
+    const afterOnsite = mergeParsedIntoForm(afterRemote, ONSITE_ROLE, parsePost(ONSITE_ROLE));
+    expect(afterOnsite.location).toBe('Mumbai');
+    expect(afterOnsite.isRemote).toBe(false);
+  });
+
+  test('a Remote tick the POSTER set by hand survives a later paste', () => {
+    // editField nulls locationSource, which is what marks the value as the
+    // poster's rather than a parse's.
+    const handTicked = editField(EMPTY_FORM, 'isRemote', true);
+    expect(handTicked.locationSource).toBeNull();
+
+    const afterPaste = mergeParsedIntoForm(handTicked, ONSITE_ROLE, parsePost(ONSITE_ROLE));
+    expect(afterPaste.isRemote).toBe(true);
+  });
+
+  test('a paste that finds no location at all clears a previously parsed Remote tick', () => {
+    const afterRemote = mergeParsedIntoForm(EMPTY_FORM, REMOTE_ROLE, parsePost(REMOTE_ROLE));
+    expect(afterRemote.isRemote).toBe(true);
+
+    const noLocation = mergeParsedIntoForm(afterRemote, 'Someone good for a senior role, drop me a line.', parsePost('Someone good for a senior role, drop me a line.'));
+    expect(noLocation.location).toBe('');
+    expect(noLocation.isRemote).toBe(false);
+  });
+});

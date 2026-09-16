@@ -186,15 +186,23 @@ export function mergeParsedIntoForm(f: FormState, text: string, parsed: ParsedPo
     next.companySource = null;
   }
 
+  // `isRemote` has no source field of its own, so it borrows `locationSource`
+  // as its provenance: the two are only ever written together. A ticked box
+  // that came from an earlier paste is that paste's guess and must not survive
+  // a newer one — otherwise pasting a Remote role and then an onsite Mumbai
+  // role publishes Mumbai marked Remote, which is a wrong fact on the board and
+  // far easier to miss than a wrong value in a text field. A box the POSTER
+  // ticked carries no `locationSource` (`editField` nulls it) and is preserved.
   if (parsed.locations.value?.length) {
     const remote = parsed.locations.value.includes('Remote');
     const rest = parsed.locations.value.filter((l) => l !== 'Remote');
     next.location = rest.join(', ');
-    next.isRemote = remote || f.isRemote;
+    next.isRemote = remote || (f.locationSource ? false : f.isRemote);
     next.locationSource = parsed.locations.source;
   } else if (f.locationSource) {
     next.location = '';
     next.locationSource = null;
+    next.isRemote = false;
   }
 
   if (parsed.experience.value) {
