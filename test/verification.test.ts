@@ -24,6 +24,22 @@ describe('verification (section 6)', () => {
     expect(tierForEmail('someone@xlri.ac.in', school)).toBeNull();
   });
 
+  test('a subdomain of the allowlisted domain is not Tier A', () => {
+    expect(tierForEmail('someone@evil.astra.xlri.ac.in', school)).toBeNull();
+  });
+
+  test('an address with two @ signs cannot smuggle the allowlisted domain', () => {
+    // Delivers to evil.com; `split('@')[1]` would have returned the middle
+    // segment and granted Tier A.
+    expect(tierForEmail('attacker@astra.xlri.ac.in@evil.com', school)).toBeNull();
+  });
+
+  test('malformed input is rejected rather than guessed at', () => {
+    expect(tierForEmail('no-at-sign', school)).toBeNull();
+    expect(tierForEmail('', school)).toBeNull();
+    expect(tierForEmail('@astra.xlri.ac.in', school)).toBe('A');
+  });
+
   test('a personal address needs manual review', () => {
     expect(tierForEmail('rohit@gmail.com', school)).toBeNull();
   });
@@ -50,6 +66,10 @@ describe('verification (section 6)', () => {
 
   test('an approved case cannot be appealed', () => {
     expect(canAppeal(decideCase(pendingCase(), 'approved', 'a', 1, ''))).toBe(false);
+  });
+
+  test('a pending case cannot be appealed', () => {
+    expect(canAppeal(pendingCase())).toBe(false);
   });
 
   test('vouching stays locked below the threshold', () => {

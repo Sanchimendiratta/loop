@@ -17,7 +17,17 @@ import type { School, VerificationCase, VerificationTier } from '../data/schema.
  * cheapest possible forgery of the one signal we treat as proof.
  */
 export function tierForEmail(email: string, school: School): VerificationTier | null {
-  const domain = String(email ?? '').trim().toLowerCase().split('@')[1];
+  // Exactly one '@', and the domain is what follows it.
+  //
+  // `split('@')[1]` is NOT the same thing and is a real bypass: for
+  // `attacker@astra.xlri.ac.in@evil.com` it returns the allowlisted middle
+  // segment while the address actually delivers to evil.com — granting instant
+  // verification to a forged address, on the one signal this product treats as
+  // proof. Requiring a single '@' rejects malformed input instead of guessing
+  // which part of it to trust.
+  const parts = String(email ?? '').trim().toLowerCase().split('@');
+  if (parts.length !== 2) return null;
+  const domain = parts[1];
   if (!domain) return null;
   return school.verifiedDomains.some((d) => d.toLowerCase() === domain) ? 'A' : null;
 }
