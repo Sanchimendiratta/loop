@@ -4,6 +4,9 @@ import { Avatar, EmptyState, Select } from './primitives.tsx';
 import { Board } from './Board.tsx';
 import { PostDetail } from './PostDetail.tsx';
 import type { ReferralBridgeRequest } from './PostDetail.tsx';
+import { Directory } from './Directory.tsx';
+import { CompanyPage } from './CompanyPage.tsx';
+import type { ReferralAsk } from './CompanyPage.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
@@ -25,6 +28,7 @@ export function App() {
   const now = useNow();
   const [view, setView] = useState<View>('board');
   const [openPostId, setOpenPostId] = useState<string | null>(null);
+  const [openCompanyId, setOpenCompanyId] = useState<string | null>(null);
 
   // Task 21 owns the referral request composer and its lifecycle. Until it
   // exists, the bridge's callback has nowhere real to hand off to — logging
@@ -32,6 +36,20 @@ export function App() {
   // composer living in this task's scope.
   function handleRequestReferral(req: ReferralBridgeRequest): void {
     console.info('[Task 21 TODO] open referral request composer, pre-filled with:', req);
+  }
+
+  // The directory and company page raise a "cold" ask — no job post behind
+  // it, so `jobPostId` may be null and `roleTitle` blank. Same stand-in as
+  // above, kept separate because the two callback shapes differ.
+  function handleDirectReferralAsk(req: ReferralAsk): void {
+    console.info('[Task 21 TODO] open referral request composer, pre-filled with:', req);
+  }
+
+  // Leaving the directory tab drops any company drill-down, so coming back
+  // to it later starts from the roster rather than wherever it was left.
+  function handleNavigate(id: string): void {
+    if (id !== 'directory') setOpenCompanyId(null);
+    setView(id as View);
   }
 
   const member = getCurrentMember();
@@ -95,10 +113,21 @@ export function App() {
 
       <div className="min-h-0 flex-1">
         <VerificationGate>
-          <Shell nav={nav} active={view} onNavigate={(id) => setView(id as View)}>
+          <Shell nav={nav} active={view} onNavigate={handleNavigate}>
             {view === 'board' ? <Board now={now} onOpenPost={setOpenPostId} /> : null}
             {view === 'tracker' ? <Placeholder label="Tracker" /> : null}
-            {view === 'directory' ? <Placeholder label="Directory" /> : null}
+            {view === 'directory' ? (
+              openCompanyId ? (
+                <CompanyPage
+                  companyId={openCompanyId}
+                  now={now}
+                  onBack={() => setOpenCompanyId(null)}
+                  onRequestReferral={handleDirectReferralAsk}
+                />
+              ) : (
+                <Directory now={now} onOpenCompany={setOpenCompanyId} onRequestReferral={handleDirectReferralAsk} />
+              )
+            ) : null}
             {view === 'requests' ? <Placeholder label="Requests" /> : null}
             {view === 'admin' ? <Placeholder label="Admin" /> : null}
           </Shell>
