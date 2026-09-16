@@ -55,6 +55,18 @@ function sourceHint(value: unknown, source: string | null): ReactNode | undefine
   );
 }
 
+/**
+ * The same dimmed source line as `Field`'s own `hint` slot renders, used for
+ * the two optional fields below — their `Field.hint` prop is already spoken
+ * for by the "Optional" label, so the source line is rendered manually here
+ * in the exact same style.
+ */
+function SourceLine({ value, source }: { value: unknown; source: string | null }) {
+  const hint = sourceHint(value, source);
+  if (!hint) return null;
+  return <span className="mt-1 block text-xs text-stone-500">{hint}</span>;
+}
+
 interface FormState {
   title: string;
   confidential: boolean;
@@ -436,6 +448,26 @@ export function PostComposer({ open, onClose, onPublished }: PostComposerProps) 
               </label>
             ))}
           </div>
+        </Field>
+
+        {/*
+         * §9: the parser never publishes — any value it fills in must be
+         * visible and editable before it reaches the draft. These two are
+         * parsed but not among the six required fields, so they are marked
+         * optional rather than added to the ≤1-typing target.
+         */}
+        <Field label="Compensation" hint="Optional">
+          <Input
+            value={form.compText}
+            onChange={(e) => set('compText', e.currentTarget.value)}
+            placeholder="e.g. ₹30–40L fixed"
+          />
+          <SourceLine value={parsed?.compensation.value ?? null} source={parsed?.compensation.source ?? null} />
+        </Field>
+
+        <Field label="JD link" hint="Optional">
+          <Input value={form.jdUrl} onChange={(e) => set('jdUrl', e.currentTarget.value)} placeholder="https://…" />
+          <SourceLine value={parsed?.jdUrl.value ?? null} source={parsed?.jdUrl.source ?? null} />
         </Field>
 
         <Field label="Where does the application go?" required>
