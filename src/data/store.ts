@@ -23,6 +23,7 @@ import type {
   DestinationType,
   JobPost,
   Member,
+  MemberStatus,
   PostApplication,
   PostShare,
   PosterRelationship,
@@ -49,6 +50,10 @@ import {
   RESPONSE_WINDOW_DAYS,
   RuleViolation,
 } from '../core/requests.ts';
+// Re-exported so UI modules have one refusal type to catch, from the one
+// module they are allowed to import (`RuleViolation` otherwise lives in
+// `core/requests.ts`, which is not on the UI's import list).
+export { RuleViolation };
 import { duplicateSubmissionGuard, intakeCheck } from '../core/capacity.ts';
 import { CONFIRM_PROMPT_DAYS, freshnessFor } from '../core/freshness.ts';
 import { sortPosts } from '../core/rank.ts';
@@ -264,6 +269,27 @@ export function setCurrentMember(id: string): void {
   if (!member) throw new RuleViolation('No such member.', 'unknown_member');
   s.currentMemberId = id;
   commit();
+}
+
+export interface Persona {
+  id: string;
+  name: string;
+  status: MemberStatus;
+}
+
+/**
+ * The full roster of demo identities, for the persona switcher that stands in
+ * for Google's account chooser (Task 16).
+ *
+ * Deliberately NOT viewer-scoped — picking which account to sign in as is a
+ * pre-authentication choice, not a network read, and gating it on
+ * `canSeeNetwork` would strand a session on an unverified persona with no way
+ * back to a verified one. It is safe precisely because it is this narrow: no
+ * company, no privacy settings, no contact fields — nothing `toPublicMember`
+ * exists to strip.
+ */
+export function listPersonas(): Persona[] {
+  return getState().members.map((m) => ({ id: m.id, name: m.name, status: m.status }));
 }
 
 /**
@@ -869,6 +895,25 @@ export function setPrivacy(privacy: PrivacySettings): Member {
       blockedMemberIds: [...new Set(privacy.blockedMemberIds)].filter((id) => id !== viewer.id),
     },
   });
+}
+
+/**
+ * The current member's own verification case — evidence and decision.
+ *
+ * `listCases()` is the admin queue and stays admin-only, gated on
+ * `canSeeNetwork`. But the verification gate has to show a pending or
+ * rejected member the evidence THEY submitted and the reason THEY were
+ * rejected, precisely when `canSeeNetwork` says no — that is not a network
+ * read, it is a receipt for their own submission. Most recent case first, so
+ * an appeal (a resubmission) is what the gate shows, not the original.
+ */
+export function myVerificationCase(): VerificationCase | null {
+  const s = getState();
+  const me = s.members.find((m) => m.id === s.currentMemberId);
+  if (!me) return null;
+  const mine = s.cases.filter((c) => c.memberId === me.id);
+  if (mine.length === 0) return null;
+  return mine.reduce((latest, c) => (c.submittedAt > latest.submittedAt ? c : latest));
 }
 
 export function decideVerification(
