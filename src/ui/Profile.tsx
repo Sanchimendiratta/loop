@@ -203,11 +203,22 @@ function ProfileForm({ member }: { member: Member }) {
 }
 
 /**
- * The D6 privacy panel: confidential search, plus the two block lists (§8).
+ * The D6 privacy panel: the structural confidentiality guarantee stated as
+ * fact, plus the two block lists a member actually controls (§8).
  *
  * Reads `member.privacy` straight off the full `Member` handed in by
  * `Profile` below — never `getMember()`, whose `PublicMember` has no
  * `privacy` field to read at all.
+ *
+ * D6's confidentiality is architectural, not an opt-in setting: requests are
+ * 1:1 private (`canSeeRequest`), member reads return `PublicMember` with no
+ * activity attached, and there is no public request feed or open-to-work
+ * wall to opt out of in the first place. Earlier this panel rendered
+ * `privacy.confidentialSearch` as a checkbox a member could flip — but
+ * nothing in the codebase ever branches on that field, so the toggle
+ * changed nothing while its copy implied it did. A control that lies about
+ * its own effect is worse than no control, so it is gone; the guarantee is
+ * stated as a fact instead, above the controls that do something.
  *
  * Blocked companies is the more prominent control on purpose: §4's Karan is
  * an employed seeker hiding a search from his own employer, and that is the
@@ -271,20 +282,15 @@ function PrivacyPanel({ member }: { member: Member }) {
         <p className="text-xs text-stone-500">Controls over who can find you while you look.</p>
       </div>
 
-      <label className="flex items-start gap-3 rounded-lg bg-brand-50 p-3 ring-1 ring-brand-500/20">
-        <input
-          type="checkbox"
-          checked={privacy.confidentialSearch}
-          onChange={(e) => commit({ ...privacy, confidentialSearch: e.currentTarget.checked })}
-          className="mt-0.5 size-4 rounded border-stone-300 text-brand-600 focus:ring-brand-500"
-        />
-        <span>
-          <span className="block text-sm font-medium text-stone-900">Confidential search</span>
-          <span className="block text-xs text-stone-600">
-            Nothing about your search is visible to the network. There is no open-to-work wall here.
-          </span>
-        </span>
-      </label>
+      {/* A fact, not a setting — there is nothing here to opt into or out of.
+          See the block comment above for why this replaced a checkbox. */}
+      <div className="rounded-lg bg-brand-50 p-3 ring-1 ring-brand-500/20">
+        <p className="text-sm font-medium text-stone-900">Your search is private.</p>
+        <p className="mt-0.5 text-xs text-stone-600">
+          Loop has no "open to work" wall and no public feed of requests. A referral request is visible only to you
+          and the alum you sent it to. Nobody can browse who you have asked.
+        </p>
+      </div>
 
       {/* The prominent control: a heavier border, a heading one size up from
           the panel below it, and listed first. */}

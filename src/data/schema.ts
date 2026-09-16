@@ -40,7 +40,12 @@ export interface School {
 }
 
 export interface PrivacySettings {
-  /** D6: nothing about a seeker is public. Kept as a field so the default is visible in data, not implied by absence. */
+  /**
+   * Reserved. Not currently read by any code path: D6's confidentiality is
+   * enforced structurally — requests are 1:1 private, member reads return
+   * PublicMember, and there is no public feed to opt out of. Kept because
+   * §9's data model names it and a future opt-out would wire up here.
+   */
   confidentialSearch: boolean;
   blockedCompanyIds: string[];
   blockedMemberIds: string[];
