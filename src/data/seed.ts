@@ -52,7 +52,8 @@ export interface AppState {
   notifications: Notification[];
   pushSubscriptions: PushSubscription[];
   reports: Report[];
-  currentMemberId: string;
+  /** `null` once the member signs out — the state Login exists to be reached from. */
+  currentMemberId: string | null;
   /**
    * A Google identity with no matching `Member` row yet — set only by
    * `store.beginNewSignIn`, the demo's stand-in for "the visitor picked an

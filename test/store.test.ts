@@ -500,3 +500,52 @@ describe('persistence', () => {
     });
   });
 });
+
+/**
+ * Signing out exists for one reason: without it `currentMemberId` always names
+ * a seeded row, the gate's `!member` branch never runs, and `Login` — screen 1
+ * of eight — is implemented and rendered by the smoke script yet unreachable by
+ * any navigation. Task 14's walkthrough caught that against the spec's "all
+ * eight screens are reachable" criterion.
+ *
+ * The second test is the one that matters. An empty session is an UNVERIFIED
+ * viewer, so D2 applies to it exactly as it applies to a pending member: it
+ * must read nothing. A sign-out that left the board readable would be a worse
+ * bug than the unreachable screen it was added to fix.
+ */
+describe('signing out', () => {
+  test('empties the session, which is what makes Login reachable', () => {
+    expect(store.getCurrentMember()).not.toBeNull();
+
+    store.signOut();
+
+    expect(store.getCurrentMember()).toBeNull();
+    expect(store.pendingNewSignIn()).toBeNull();
+  });
+
+  test('a signed-out viewer reads nothing — D2 holds with no session at all', () => {
+    const postId = store.getState().posts[0]!.id;
+
+    store.signOut();
+
+    expect(store.listPosts(NOW)).toEqual([]);
+    expect(store.myApplications(NOW)).toEqual([]);
+    expect(store.myPosts()).toEqual([]);
+    expect(store.myNotifications()).toEqual([]);
+    expect(store.applicantsFor(postId)).toEqual([]);
+    expect(store.pendingCases()).toEqual([]);
+    expect(store.decidedCases()).toEqual([]);
+    expect(store.listReports()).toEqual([]);
+    expect(store.applyDisclosureFields()).toEqual([]);
+  });
+
+  test('signing out abandons a half-finished second sign-in rather than keeping it', () => {
+    store.beginNewSignIn({ googleSub: 'g_half', email: 'half.done@astra.xlri.ac.in' });
+    expect(store.pendingNewSignIn()).not.toBeNull();
+
+    store.signOut();
+
+    expect(store.pendingNewSignIn()).toBeNull();
+    expect(store.getCurrentMember()).toBeNull();
+  });
+});

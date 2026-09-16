@@ -266,6 +266,24 @@ export function beginNewSignIn(identity: GoogleIdentity): void {
   commit();
 }
 
+/**
+ * Signing out — the only way to reach `Login` (screen 1) in a running build.
+ *
+ * Without this, `currentMemberId` always names a seeded row and the gate's
+ * `!member` branch is unreachable, so screen 1 is implemented, rendered by the
+ * smoke script, and yet impossible to get to by any navigation. That failed
+ * the spec's "all eight screens are reachable" criterion.
+ *
+ * Clears `newSignIn` too: signing out of an account while a second sign-in is
+ * half-finished should leave one empty session, not a half-finished one.
+ */
+export function signOut(): void {
+  const s = getState();
+  s.currentMemberId = null;
+  s.newSignIn = null;
+  commit();
+}
+
 /** Abandoning the form without submitting it. Simply un-sets the flag; `currentMemberId` was never touched, so whoever was signed in before is signed in again. */
 export function cancelNewSignIn(): void {
   const s = getState();

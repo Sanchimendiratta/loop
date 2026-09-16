@@ -3,6 +3,7 @@ import {
   beginNewSignIn,
   getCurrentMember,
   listPersonas,
+  signOut,
   pendingCases,
   setCurrentMember,
 } from '../data/store.ts';
@@ -20,6 +21,7 @@ import { useNow, useStoreVersion } from './useStore.ts';
 /** Sentinel `<option>` values for the two "sign in fresh" entries below. Never a real member id, so `setCurrentMember` must never see one. */
 const NEW_XLRI_ACCOUNT = '__new_xlri__';
 const NEW_PERSONAL_ACCOUNT = '__new_personal__';
+const SIGN_OUT = '__sign_out__';
 
 // Lite's nav (Task 7): Board, the two personal sheets, and Admin for the one
 // member allowed to see it. `PostDetail`/`Directory`/`Tracker`/`Profile` do
@@ -53,6 +55,13 @@ export function App() {
     }
     if (value === NEW_PERSONAL_ACCOUNT) {
       beginNewSignIn(makeGoogleIdentity('gmail.com'));
+      return;
+    }
+    // The only route to screen 1. Every other option names or fabricates an
+    // identity; this one empties the session, which is the single state the
+    // gate renders `Login` for.
+    if (value === SIGN_OUT) {
+      signOut();
       return;
     }
     setCurrentMember(value);
@@ -109,6 +118,7 @@ export function App() {
             ))}
             <option value={NEW_XLRI_ACCOUNT}>+ New Google sign-in — institute address</option>
             <option value={NEW_PERSONAL_ACCOUNT}>+ New Google sign-in — personal address</option>
+            <option value={SIGN_OUT}>Sign out — show the sign-in screen</option>
           </Select>
         </div>
       </div>
