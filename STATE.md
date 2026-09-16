@@ -43,7 +43,7 @@ Lite is eight screens, three sheets, no email, and its governing rule is
 ```sh
 npm install
 npm run dev       # http://localhost:5174
-npm run verify    # typecheck + 151 tests + render smoke (with the orphan check) + production build
+npm run verify    # typecheck + 154 tests + render smoke (with the orphan check) + production build
 ```
 
 One entry point (`index.html`), one persona switcher standing in for Google's
@@ -54,7 +54,7 @@ show without a real OAuth flow.
 
 ## Done and verified
 
-`npm run verify` is green: **typecheck clean · 151 tests passing across 14
+`npm run verify` is green: **typecheck clean · 154 tests passing across 14
 files · every screen-level component under `src/ui/` renders, with markup
 checked for `NaN`/`undefined`/`[object Object]` · the orphan check (module-
 and screen-level) · production build succeeds.**
@@ -211,17 +211,22 @@ Two more invariants worth knowing before touching `Board.tsx` or `store.ts`:
   were deliberately **not** touched to improve this number — it is a
   measurement of what ships today, not a target to hit. Full counts and the
   browser session that produced them are in the Task 14 report.
-- **Login is implemented and rendered (by the smoke script and by
-  `VerificationGate.tsx` importing it), but is not reachable from the running
-  app by any interaction found during this task's walkthrough.** `main.tsx`
-  always seeds or rehydrates into a valid, already-signed-in
-  `currentMemberId` (the seed's default is `m_ananya`); there is no sign-out
-  affordance anywhere in `src/ui/`, and `beginNewSignIn`'s "new Google
-  sign-in" options land on the Get-verified form, not on `Login`. Clearing
-  `localStorage` and reloading was tried and still lands signed in as Ananya.
-  This is flagged here rather than patched, because adding a sign-out control
-  would be a `Login.tsx`/`App.tsx` design change this task does not own —
-  see the Task 14 report for the full walkthrough this was found during.
+- **Login is reachable via "Sign out" in the persona switcher.** It was not,
+  until the walkthrough above caught it: `currentMemberId` always named a
+  seeded row, so `VerificationGate`'s `!member` branch never ran and screen 1
+  of eight was unreachable by any navigation — while still passing every
+  automated check, including its own smoke render. Clearing `localStorage`
+  did not help, because `load()` reseeds.
+
+  `currentMemberId` is now `string | null` and `store.signOut()` produces the
+  empty session. The gate already routed correctly, so nothing there changed.
+
+  **If you touch sign-out, keep this in mind:** an empty session is an
+  *unverified* viewer, so D2 applies to it exactly as it applies to a pending
+  member — every viewer-scoped read must come back empty. There is a test
+  pinning that (`test/store.test.ts`, "a signed-out viewer reads nothing"). A
+  sign-out that left the board readable would be a worse bug than the
+  unreachable screen it was added to fix.
 
 ## Deliberately not built (spec §14)
 
