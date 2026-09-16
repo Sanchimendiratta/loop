@@ -212,6 +212,18 @@ console.log(
 // VERIFIED viewer must find post data. Without it, a detector broken by an
 // escaping change or a markup change would pass silently — which is the exact
 // failure this assertion replaces.
+//
+// The secret list is built from every post and every application in the
+// store, keyed by value rather than by whose row it came from — which means
+// it can, by coincidence, contain a string that is ALSO a value on the
+// current viewer's own record (e.g. one member's "known by" field naming
+// another member who happens to be an applicant elsewhere). A viewer's own
+// name, batch, programme, LinkedIn URL and "known by" are theirs to see —
+// Lite §3 requires the Pending screen to show exactly that, as "the evidence
+// they submitted" — so `ownFieldValues` below is subtracted from the secret
+// list before either check runs. This narrows what counts as a leak; it must
+// not narrow it to nothing, which is why the positive control still has to
+// fire afterwards.
 // ---------------------------------------------------------------------------
 console.log('\nD2 gate assertion:\n');
 
@@ -251,12 +263,20 @@ try {
     if (m) secrets.push(['applicant name', m.name]);
   }
 
+  /** The current viewer's own submitted evidence — theirs to see, never a leak, however it collides with the secret list above. */
+  function ownFieldValues(memberId) {
+    const m = st.members.find((x) => x.id === memberId);
+    if (!m) return new Set();
+    return new Set([m.name, String(m.batch), m.programme, m.linkedinUrl, m.knownBy].filter(Boolean));
+  }
+
   // Positive control.
   const verified = store.listPersonas().find((p) => p.status === 'verified');
   if (!verified) throw new Error('no verified persona in the seeded store to calibrate the detector against');
   store.setCurrentMember(verified.id);
   const visible = outsideThePersonaSwitcher(render(AppMod.App, {}));
-  const found = secrets.filter(([, v]) => containsValue(visible, v));
+  const verifiedOwn = ownFieldValues(verified.id);
+  const found = secrets.filter(([, v]) => containsValue(visible, v) && !verifiedOwn.has(v));
   if (!found.length) {
     fail('D2 gate', 'the detector found no post data even for a VERIFIED viewer — it cannot fail, so it proves nothing');
   } else {
@@ -268,11 +288,15 @@ try {
     store.setCurrentMember(pending.id);
 
     const gated = outsideThePersonaSwitcher(render(AppMod.App, {}));
-    const leaked = secrets.filter(([, v]) => containsValue(gated, v));
+    const pendingOwn = ownFieldValues(pending.id);
+    const leaked = secrets.filter(([, v]) => containsValue(gated, v) && !pendingOwn.has(v));
     if (leaked.length) {
       fail('D2 gate', `pending viewer's App render leaks ${leaked.map(([k, v]) => `${k} "${v}"`).join(', ')}`);
     } else {
-      ok('D2 gate', `pending viewer (${pending.id}) sees none of ${secrets.length} network data points`);
+      ok(
+        'D2 gate',
+        `pending viewer (${pending.id}) sees none of ${secrets.length} network data points beyond their own submitted evidence`,
+      );
     }
   }
 } catch (err) {

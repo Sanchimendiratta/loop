@@ -1,12 +1,20 @@
 import { useState } from 'react';
-import { getCurrentMember, listPersonas, myApplications, myPosts, pendingCases, setCurrentMember } from '../data/store.ts';
+import {
+  beginNewSignIn,
+  getCurrentMember,
+  listPersonas,
+  myApplications,
+  myPosts,
+  pendingCases,
+  setCurrentMember,
+} from '../data/store.ts';
 import { Avatar, EmptyState, Select } from './primitives.tsx';
 import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
 import { makeGoogleIdentity } from './Login.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
-import { requestNewGoogleSignIn, VerificationGate } from './VerificationGate.tsx';
+import { VerificationGate } from './VerificationGate.tsx';
 import { useNow, useStoreVersion } from './useStore.ts';
 
 /** Sentinel `<option>` values for the two "sign in fresh" entries below. Never a real member id, so `setCurrentMember` must never see one. */
@@ -31,20 +39,20 @@ export function App() {
   /**
    * The two sentinel options don't name a member, so they can't go through
    * `setCurrentMember` — they hand a fabricated identity to
-   * `VerificationGate`'s "new sign-in" slot instead, which takes priority
-   * over whatever session is already active. This is the one way to reach
-   * the Get-verified form (screen 2) other than a truly first-ever visit:
-   * signing in with a second Google account without first signing out of the
-   * one already open, exactly as this switcher itself stays reachable no
-   * matter what the active session's gate state is.
+   * `store.beginNewSignIn` instead, which takes priority over whatever
+   * session is already active (see that function's docblock). This is the
+   * one way to reach the Get-verified form (screen 2) other than a truly
+   * first-ever visit: signing in with a second Google account without first
+   * signing out of the one already open, exactly as this switcher itself
+   * stays reachable no matter what the active session's gate state is.
    */
   function handleSwitcherChange(value: string): void {
     if (value === NEW_XLRI_ACCOUNT) {
-      requestNewGoogleSignIn(makeGoogleIdentity('astra.xlri.ac.in'));
+      beginNewSignIn(makeGoogleIdentity('astra.xlri.ac.in'));
       return;
     }
     if (value === NEW_PERSONAL_ACCOUNT) {
-      requestNewGoogleSignIn(makeGoogleIdentity('gmail.com'));
+      beginNewSignIn(makeGoogleIdentity('gmail.com'));
       return;
     }
     setCurrentMember(value);

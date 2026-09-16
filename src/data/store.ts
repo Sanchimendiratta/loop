@@ -30,7 +30,8 @@
  * afterwards.
  */
 import { buildSeed } from './seed.ts';
-import type { AppState } from './seed.ts';
+import type { AppState, GoogleIdentity } from './seed.ts';
+export type { GoogleIdentity } from './seed.ts';
 import { SCHEMA_VERSION } from './schema.ts';
 import type {
   Application,
@@ -196,18 +197,31 @@ function nextId(prefix: string): string {
  * `memberId` parameter: the moment it can answer about someone else it becomes
  * the directory read Lite deleted, and rule 2 — applicant details reach
  * exactly one person — would have a second, ungated way around it.
+ *
+ * Returns `null` while `newSignIn` is set, even though `currentMemberId`
+ * still points at whoever was signed in before — see `beginNewSignIn` below.
+ * A fresh Google identity with no row yet has no member to be.
  */
 export function getCurrentMember(): Member | null {
   const s = getState();
+  if (s.newSignIn) return null;
   return s.members.find((m) => m.id === s.currentMemberId) ?? null;
 }
 
+/**
+ * Also ends any in-progress `newSignIn`: choosing an account — an existing
+ * one from the switcher, or the one `submitVerification` just created — is
+ * always how that state resolves, never something a caller clears
+ * separately. Leaving it set after this would make `getCurrentMember()` keep
+ * answering `null` for the id that was just chosen.
+ */
 export function setCurrentMember(id: string): void {
   const s = getState();
   const member = s.members.find((m) => m.id === id);
   if (!member) throw new RuleViolation('No such member.', 'unknown_member');
-  if (s.currentMemberId === id) return;
+  if (s.currentMemberId === id && !s.newSignIn) return;
   s.currentMemberId = id;
+  s.newSignIn = null;
   commit();
 }
 
@@ -229,6 +243,40 @@ export interface Persona {
  */
 export function listPersonas(): Persona[] {
   return getState().members.map((m) => ({ id: m.id, name: m.name, status: m.status }));
+}
+
+/**
+ * The other half of the auth stand-in `listPersonas` is documented as: there
+ * is no real Google OAuth here, so "the visitor picked an account Google
+ * returned that has no matching row" has to be simulated somehow. This is
+ * that simulation, and it is deliberately a store write rather than component
+ * state, for the same reason `currentMemberId` itself lives here — every
+ * screen that cares (`VerificationGate`, and the switcher in `App`) has to
+ * agree on the answer, through the one subscribe/commit path everything else
+ * in this file already goes through, not a second channel next to it.
+ *
+ * Takes priority over `currentMemberId`: a person can start a second Google
+ * sign-in without first signing out of a session that is already verified,
+ * pending or rejected — `getCurrentMember()` above answers `null` the moment
+ * this is set, and stays that way until `setCurrentMember` resolves it.
+ */
+export function beginNewSignIn(identity: GoogleIdentity): void {
+  const s = getState();
+  s.newSignIn = identity;
+  commit();
+}
+
+/** Abandoning the form without submitting it. Simply un-sets the flag; `currentMemberId` was never touched, so whoever was signed in before is signed in again. */
+export function cancelNewSignIn(): void {
+  const s = getState();
+  if (!s.newSignIn) return;
+  s.newSignIn = null;
+  commit();
+}
+
+/** The identity `beginNewSignIn` recorded, or `null` if none is in progress. Ungated for the same reason `listPersonas` is: there is no member yet to gate it on. */
+export function pendingNewSignIn(): GoogleIdentity | null {
+  return getState().newSignIn;
 }
 
 /**

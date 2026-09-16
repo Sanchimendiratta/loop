@@ -1,52 +1,18 @@
 import type { FormEvent, ReactNode } from 'react';
-import { useState, useSyncExternalStore } from 'react';
-import { getCurrentMember, setCurrentMember, submitVerification } from '../data/store.ts';
+import { useState } from 'react';
+import {
+  cancelNewSignIn,
+  getCurrentMember,
+  pendingNewSignIn,
+  setCurrentMember,
+  submitVerification,
+} from '../data/store.ts';
+import type { GoogleIdentity } from '../data/store.ts';
 import type { Member } from '../data/schema.ts';
 import { PROGRAMMES } from '../data/schema.ts';
 import type { Programme } from '../data/schema.ts';
 import { Button, Card, Field, Input, Select, cx } from './primitives.tsx';
 import { Login } from './Login.tsx';
-import type { GoogleIdentity } from './Login.tsx';
-
-/**
- * A UI-only "someone just signed in with a Google account we've never seen"
- * signal — deliberately not store state (it names no member yet; there is
- * nothing to persist until the form below is submitted) and deliberately not
- * component state either, because it has two independent triggers:
- * `Login`'s own buttons (the true first-visit path) and `App`'s top-bar
- * "continue with a different Google account" control, reachable even while
- * an existing session is verified, pending or rejected — the same way the
- * persona switcher next to it stays reachable regardless of gate state.
- * Small pub-sub, same shape as `useStore.ts`'s version counter.
- */
-let newSignIn: GoogleIdentity | null = null;
-const newSignInListeners = new Set<() => void>();
-function notifyNewSignIn(): void {
-  for (const fn of newSignInListeners) fn();
-}
-
-/** Called by `Login` and by `App`'s top bar; both hand it a fabricated identity. */
-export function requestNewGoogleSignIn(identity: GoogleIdentity): void {
-  newSignIn = identity;
-  notifyNewSignIn();
-}
-
-function clearNewGoogleSignIn(): void {
-  newSignIn = null;
-  notifyNewSignIn();
-}
-
-function useNewGoogleSignIn(): GoogleIdentity | null {
-  const subscribe = (fn: () => void) => {
-    newSignInListeners.add(fn);
-    return () => newSignInListeners.delete(fn);
-  };
-  const snapshot = () => newSignIn;
-  // Both the client and server snapshot args are the same reader — this is
-  // module state, not a browser API, so it reads identically under Vite's
-  // SSR loader (see scripts/smoke.mjs) as it does in the browser.
-  return useSyncExternalStore(subscribe, snapshot, snapshot);
-}
 
 /**
  * D2: "an unverified account can see nothing." This is the whole product's
@@ -61,36 +27,31 @@ function useNewGoogleSignIn(): GoogleIdentity | null {
  * `store.viewerOrNull()`, which every read begins with. A screen that forgot
  * to mount inside this gate would still be handed nothing.
  *
- * A fresh Google identity with no matching row takes priority over whatever
- * `getCurrentMember()` says, including a currently-verified session: signing
- * in with a second Google account is something a person can do without first
- * signing out of the first one, exactly like the persona switcher above this
- * gate stays reachable regardless of gate state. Once the form below is
- * submitted, `setCurrentMember` moves the session onto the new row and this
- * branch stops matching.
+ * `getCurrentMember()` answers `null` for two different reasons — and both
+ * are decided by the store, not here, so this component just reads the
+ * result:
  *
- * Short of that, `getCurrentMember()` returning `null` means nobody has
- * signed in at all → `Login`.
+ *   - nobody has ever signed in → `Login`.
+ *   - `store.beginNewSignIn` recorded a fresh Google identity with no
+ *     matching row. That takes priority over `currentMemberId` inside
+ *     `getCurrentMember()` itself, which is what lets a person start a
+ *     second Google sign-in without first signing out of a session that is
+ *     already verified, pending or rejected — the persona switcher above
+ *     this gate stays reachable the same way, for the same reason.
+ *     `setCurrentMember`, called once the form below is submitted, both
+ *     picks the new row and clears that flag in one write.
  */
 export function VerificationGate({ children }: { children: ReactNode }) {
-  const newSignInIdentity = useNewGoogleSignIn();
   const member = getCurrentMember();
 
-  if (newSignInIdentity) {
-    return (
-      <GetVerifiedForm
-        identity={newSignInIdentity}
-        onCancel={clearNewGoogleSignIn}
-        onSubmitted={(created) => {
-          setCurrentMember(created.id);
-          clearNewGoogleSignIn();
-        }}
-      />
-    );
-  }
-
   if (!member) {
-    return <Login onGoogleSignIn={requestNewGoogleSignIn} />;
+    const identity = pendingNewSignIn();
+    if (identity) {
+      return (
+        <GetVerifiedForm identity={identity} onCancel={cancelNewSignIn} onSubmitted={(created) => setCurrentMember(created.id)} />
+      );
+    }
+    return <Login />;
   }
 
   if (member.status === 'verified') {
@@ -148,10 +109,12 @@ function PendingScreen({ member }: { member: Member }) {
         <Row label="Batch" value={String(member.batch)} />
         <Row label="Programme" value={member.programme} />
         <Row label="LinkedIn" value={member.linkedinUrl} />
+        {/* `knownBy` names a real member, but this is text the viewer typed
+            themselves — their own submitted evidence (§3), not a read of
+            anyone else's row. D2 blocks reading the network; it was never
+            about a member not being allowed to see what they wrote. */}
+        {member.knownBy ? <Row label="Known by" value={member.knownBy} /> : null}
       </dl>
-      {/* "Known by" is deliberately not echoed here: it names a real, possibly
-          verified, member, and D2 says nothing renders behind this gate but
-          the viewer's own data — this field is about someone else. */}
     </GateScreen>
   );
 }

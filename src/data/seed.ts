@@ -53,6 +53,19 @@ export interface AppState {
   pushSubscriptions: PushSubscription[];
   reports: Report[];
   currentMemberId: string;
+  /**
+   * A Google identity with no matching `Member` row yet — set only by
+   * `store.beginNewSignIn`, the demo's stand-in for "the visitor picked an
+   * account Google returned that Loop has never seen." `null` the rest of
+   * the time. See `store.ts` for why this lives here rather than in a
+   * component.
+   */
+  newSignIn: GoogleIdentity | null;
+}
+
+export interface GoogleIdentity {
+  googleSub: string;
+  email: string;
 }
 
 interface PostSpec {
@@ -302,5 +315,6 @@ export function buildSeed(now: number): AppState {
     pushSubscriptions: [],
     reports,
     currentMemberId: 'm_ananya',
+    newSignIn: null,
   };
 }

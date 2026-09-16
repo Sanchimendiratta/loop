@@ -1,10 +1,6 @@
-import { listPersonas, setCurrentMember } from '../data/store.ts';
+import { beginNewSignIn, listPersonas, setCurrentMember } from '../data/store.ts';
+import type { GoogleIdentity } from '../data/store.ts';
 import { Button, Card } from './primitives.tsx';
-
-export interface GoogleIdentity {
-  googleSub: string;
-  email: string;
-}
 
 /**
  * Fabricates a plausible, never-before-seen Google identity on the domain a
@@ -12,23 +8,12 @@ export interface GoogleIdentity {
  * Google account" control, which is the other place this same fake sign-in
  * has to originate from (see that file for why: a real session already in
  * progress needs a way to start a second one without an explicit sign-out).
+ * Purely a UI-layer convenience — `store.beginNewSignIn` doesn't care how the
+ * identity was produced, only what shape it is.
  */
 export function makeGoogleIdentity(domain: 'astra.xlri.ac.in' | 'gmail.com'): GoogleIdentity {
   const stamp = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
   return { googleSub: `g_new_${stamp}`, email: `new.member.${stamp}@${domain}` };
-}
-
-export interface LoginProps {
-  /**
-   * Fired once, when the visitor picks a Google account to continue with. A
-   * real integration hands this the account Google returned; there is no
-   * such integration here (§3: Google sign-in only, no passwords, no OTP), so
-   * the two buttons below fabricate a plausible identity for each of the two
-   * domains D2 actually branches on — an institute address and a personal
-   * one. `VerificationGate` decides what happens next; this component's only
-   * job is choosing who just signed in.
-   */
-  onGoogleSignIn: (identity: GoogleIdentity) => void;
 }
 
 /**
@@ -39,8 +24,8 @@ export interface LoginProps {
  *      simulated here as two buttons standing in for the two email domains
  *      that produce different outcomes downstream (an instant Tier-A pass vs.
  *      a form that waits on a reviewer). Either one hands a fresh, unseeded
- *      identity to `VerificationGate`, which is what makes the Get-verified
- *      form (screen 2) reachable at all.
+ *      identity to `store.beginNewSignIn`, which is what makes the
+ *      Get-verified form (screen 2) reachable at all.
  *   2. A persona switcher, exactly like the one that sits above this
  *      component in `App` (design doc rationale) — it stands in for
  *      Google's own account chooser. It has to be able to land on a verified,
@@ -49,11 +34,11 @@ export interface LoginProps {
  *      picking one here is the only way to see the Pending or the rejected
  *      gate without first submitting the form above.
  */
-export function Login({ onGoogleSignIn }: LoginProps) {
+export function Login() {
   const personas = listPersonas();
 
   function signInWith(domain: 'astra.xlri.ac.in' | 'gmail.com'): void {
-    onGoogleSignIn(makeGoogleIdentity(domain));
+    beginNewSignIn(makeGoogleIdentity(domain));
   }
 
   return (
