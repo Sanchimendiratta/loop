@@ -3,15 +3,15 @@ import {
   beginNewSignIn,
   getCurrentMember,
   listPersonas,
-  myPosts,
   pendingCases,
   setCurrentMember,
 } from '../data/store.ts';
-import { Avatar, EmptyState, Select } from './primitives.tsx';
+import { Avatar, Select } from './primitives.tsx';
 import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
 import { makeGoogleIdentity } from './Login.tsx';
 import { MyApplications } from './MyApplications.tsx';
+import { MyPosts } from './MyPosts.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
@@ -123,23 +123,11 @@ export function App() {
             {view === 'applications' ? (
               <MyApplications now={now} onBrowseBoard={() => setView('board')} />
             ) : null}
-            {view === 'posts' ? <MyPostsPlaceholder /> : null}
+            {view === 'posts' ? <MyPosts now={now} onPostRole={() => setView('board')} /> : null}
             {view === 'admin' ? <Admin now={now} /> : null}
           </Shell>
         </VerificationGate>
       </div>
-    </div>
-  );
-}
-
-function MyPostsPlaceholder() {
-  const count = myPosts().length;
-  return (
-    <div className="p-6">
-      <EmptyState
-        title="My posts"
-        body={`You have ${count} post${count === 1 ? '' : 's'} on the board. This sheet is built in a later task, against this same myPosts() read.`}
-      />
     </div>
   );
 }
