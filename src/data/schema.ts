@@ -1,219 +1,125 @@
 /**
- * Entity shapes and enums, mirroring PRD §9's data model.
+ * Lite's six tables (spec §8, Lite §7).
  *
- * `school` exists with exactly one row and no UI (D7): opening the network to
- * another institute later is a config row, not a migration.
+ * `verification_case` is folded into `member`: Lite has no appeals, and §7 says
+ * a separate table only once appeals exist. `notification.emailed_at` is
+ * reserved and unused so email can be switched on later without rework.
  */
 
-export type PosterRelationship = 'hiring_manager' | 'internal_can_refer' | 'knows_contact' | 'forwarded';
-export type DestinationType = 'company_ats' | 'named_person' | 'external_recruiter' | 'third_party_platform' | 'via_poster';
-export type ApplyMethod = 'link' | 'email' | 'phone' | 'via_loop';
-export type ConfirmState = 'open' | 'filled' | 'unknown';
-export type VerificationTier = 'A' | 'B' | 'C';
-export type MemberStatus = 'unverified' | 'pending' | 'verified' | 'rejected' | 'suspended';
-export type DeclineReason = 'not_a_fit' | 'no_capacity' | 'dont_know_you' | 'role_closed';
-export type ApplicationOutcome = 'unknown' | 'no_response' | 'rejected' | 'responded' | 'interviewing' | 'offer';
+export const CONNECTIONS = ['hiring', 'works_here', 'knows_contact', 'forwarded'] as const;
+export type Connection = (typeof CONNECTIONS)[number];
 
-/** D16: the rung both badges the card and orders the board. */
-export const RELATIONSHIP_RANK: Record<PosterRelationship, number> = {
-  hiring_manager: 1,
-  internal_can_refer: 2,
-  knows_contact: 3,
-  forwarded: 4,
-};
-
-export const REQUEST_STATES = [
-  'sent', 'declined', 'accepted', 'submitted', 'recruiter_contact',
-  'interviewing', 'offer', 'rejected', 'no_response', 'expired',
-  'expired_unsubmitted', 'role_closed',
+export const APPLICATION_STATUSES = [
+  'yet_to_respond', 'in_review', 'interview_scheduled', 'awaiting_next_round',
+  'offer', 'rejected', 'no_response',
 ] as const;
-export type RequestState = (typeof REQUEST_STATES)[number];
+export type ApplicationStatus = (typeof APPLICATION_STATUSES)[number];
 
-export const TERMINAL_REQUEST_STATES: RequestState[] = [
-  'declined', 'offer', 'rejected', 'no_response', 'expired', 'expired_unsubmitted', 'role_closed',
-];
+/** Nothing follows these. The ladder stops; the row stays on the sheet. */
+export const TERMINAL_APPLICATION_STATUSES: ApplicationStatus[] = ['offer', 'rejected', 'no_response'];
 
-export interface School {
-  id: string;
-  name: string;
-  verifiedDomains: string[];
-}
+export const POST_STATUSES = ['open', 'filled', 'unsure'] as const;
+export type PostStatus = (typeof POST_STATUSES)[number];
 
-export interface PrivacySettings {
-  /**
-   * Reserved. Not currently read by any code path: D6's confidentiality is
-   * enforced structurally — requests are 1:1 private, member reads return
-   * PublicMember, and there is no public feed to opt out of. Kept because
-   * §9's data model names it and a future opt-out would wire up here.
-   */
-  confidentialSearch: boolean;
-  blockedCompanyIds: string[];
-  blockedMemberIds: string[];
-}
+export const APPLY_METHODS = ['link', 'email', 'phone', 'through_me'] as const;
+export type ApplyMethod = (typeof APPLY_METHODS)[number];
+
+export const PROGRAMMES = ['BM', 'HRM', 'GMP', 'PGDM (GM)', 'FPM', 'Other'] as const;
+export type Programme = (typeof PROGRAMMES)[number];
+
+export const FUNCTIONS = [
+  'HR', 'Marketing & Brand', 'Sales & BD', 'Finance', 'Strategy & Consulting',
+  'Operations & Supply Chain', 'Product & Program', 'Analytics & Data',
+  'General Management', 'Other',
+] as const;
+export type FunctionArea = (typeof FUNCTIONS)[number];
+
+export type MemberStatus = 'pending' | 'verified' | 'rejected';
+export type VerifiedBy = 'domain' | 'admin';
+export type NotificationKind = 'applied_to_your_post' | 'you_were_verified' | 'post_filled';
 
 export interface Member {
   id: string;
-  schoolId: string;
   googleSub: string;
   email: string;
   name: string;
   batch: number;
-  programme: string;
+  programme: Programme;
+  linkedinUrl: string;
+  /** Optional fifth field (Lite §3) — a second thread to pull on a thin profile. */
+  knownBy: string | null;
+  verifiedBy: VerifiedBy | null;
   status: MemberStatus;
-  tier: VerificationTier | null;
   isAdmin: boolean;
-  companyId: string | null;
-  title: string | null;
-  function: string | null;
-  location: string | null;
-  linkedinUrl: string | null;
-  openToReferring: boolean;
-  caps: { maxOpen: number; maxPerMonth: number; paused: boolean; autoDeclineMessage: string };
-  privacy: PrivacySettings;
-  resumeVersionId: string | null;
-  joinedAt: number;
-}
-
-/**
- * What a member read returns to anyone but the member themselves.
- *
- * A full Member carries privacy.blockedCompanyIds, so returning it would let
- * any verified member read who a seeker is hiding from — which discloses that
- * they are searching. The type is the enforcement: a screen cannot render a
- * blocked list it was never handed.
- */
-export type PublicMember = Omit<Member, 'googleSub' | 'privacy' | 'caps' | 'email'> & {
-  /** Present only for the viewer's own record; null for everyone else. */
-  email: string | null;
-};
-
-export interface VerificationCase {
-  id: string;
-  memberId: string;
-  tier: VerificationTier;
-  evidence: { linkedinUrl: string; batch: number; programme: string; nameAtGraduation: string };
-  decision: 'pending' | 'approved' | 'rejected' | 'more_info';
-  reviewerId: string | null;
+  requestedAt: number;
   decidedAt: number | null;
-  notes: string;
-  isAppeal: boolean;
-  submittedAt: number;
-}
-
-export interface Company {
-  id: string;
-  name: string;
-  domain: string | null;
+  decidedById: string | null;
+  decisionNote: string;
 }
 
 export interface JobPost {
   id: string;
   posterId: string;
-  companyId: string | null;
-  confidentialDescriptor: string | null;
   title: string;
-  locations: string[];
-  expMin: number | null;
-  expMax: number | null;
+  companyName: string | null;
+  isConfidential: boolean;
+  confidentialDescriptor: string | null;
+  function: FunctionArea;
+  location: string;
+  isRemote: boolean;
+  expMin: number;
+  expMax: number;
   compText: string | null;
-  function: string | null;
   applyMethod: ApplyMethod;
   applyValue: string;
   jdUrl: string | null;
-  posterRelationship: PosterRelationship;
-  destinationType: DestinationType;
-  hiringContactName: string | null;
-  hiringContactValue: string | null;
-  contactConsentConfirmed: boolean;
-  contactRemovalRequestedAt: number | null;
-  rawText: string;
-  parseConfidence: number;
-  dedupeHash: string;
+  note: string | null;
+  connection: Connection;
+  /** Named only when `connection` is `knows_contact`; shown in the line, never the value. */
+  contactName: string | null;
+  rawPaste: string | null;
   postedAt: number;
+  postStatus: PostStatus;
   lastConfirmedAt: number;
-  confirmState: ConfirmState;
-  archivedAt: number | null;
-  viewCount: number;
-  /** Three "couldn't reach this contact" flags mark the route unverified (§8). */
-  unreachableFlags: string[];
-  reportedBy: string[];
 }
 
-/** A merged duplicate: the same role posted by another alum (§5.1). */
-export interface PostShare {
-  id: string;
-  jobPostId: string;
-  sharerId: string;
-  at: number;
-}
-
-export interface PostApplication {
+export interface Application {
   id: string;
   jobPostId: string;
   memberId: string;
   appliedAt: number;
-  outcome: ApplicationOutcome;
-  outcomeAt: number | null;
-  promptedAt: number | null;
+  status: ApplicationStatus;
+  statusUpdatedAt: number;
 }
 
-export interface ReferralRequest {
-  id: string;
-  seekerId: string;
-  referrerId: string;
-  companyId: string;
-  jobPostId: string | null;
-  roleUrl: string | null;
-  roleTitle: string;
-  resumeVersionId: string | null;
-  pitch: string;
-  state: RequestState;
-  /** Stored, never inferred: the tracker and the nudge engine must not disagree. */
-  stateOwner: 'seeker' | 'referrer' | null;
-  declineReason: DeclineReason | null;
-  nextUpdateDue: number | null;
-  nudgeCount: number;
-  lastNudgedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/** Append-only. The audit trail and the dataset (PRD §9). */
-export interface RequestEvent {
-  id: string;
-  requestId: string;
-  actorId: string | null;
-  fromState: RequestState | null;
-  toState: RequestState;
-  note: string;
-  at: number;
-}
-
-export interface ResumeVersion {
+export interface Notification {
   id: string;
   memberId: string;
-  filename: string;
-  uploadedAt: number;
+  kind: NotificationKind;
+  body: string;
+  link: string;
+  readAt: number | null;
+  pushedAt: number | null;
+  /** Reserved. Unused in Lite so email can be switched on without rework (§5). */
+  emailedAt: number | null;
+  at: number;
 }
 
-export interface Vouch {
+export interface PushSubscription {
   id: string;
-  caseId: string;
-  voucherId: string;
-  at: number;
+  memberId: string;
+  endpoint: string;
+  keys: string;
+  createdAt: number;
 }
 
 export interface Report {
   id: string;
+  jobPostId: string;
   reporterId: string;
-  targetType: 'post' | 'member';
-  targetId: string;
   reason: string;
   at: number;
   resolvedAt: number | null;
 }
 
 export const SCHEMA_VERSION = 1;
-
-/** Tier C unlocks only once the network can sustain it (§6). */
-export const VOUCHING_UNLOCK_THRESHOLD = 200;
