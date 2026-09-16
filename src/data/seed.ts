@@ -43,7 +43,7 @@ import {
   MSG_3_SEARCH_FIRM,
   MSG_4_NAMED_COMPANY,
   MSG_5_CAREERS_EMAIL,
-} from '../../test/fixtures/messages.ts';
+} from './messages.ts';
 
 export interface AppState {
   version: number;
@@ -636,7 +636,25 @@ export function buildSeed(now: number): AppState {
     lastConfirmedAt: now - 35 * DAY_MS,
   });
 
-  const posts: JobPost[] = [pImpactco, pMncInsurer, pSearchfirm, pFoodhak, pAnveshan];
+  // A sixth post, posted within the last 24 hours, so D17's WhatsApp digest
+  // (which only ever looks at "today") has something to name (requirement 9).
+  // Not one of §5.0's five — those are fixed at their own ages above — but run
+  // through the same real parser, from a Nykaa employee sharing their own
+  // company's opening.
+  const pNykaa = buildFixturePost({
+    id: 'p_nykaa',
+    posterId: 'm_fill_25',
+    companyId: 'c_nykaa',
+    confidentialDescriptor: null,
+    raw: 'Nykaa is hiring a Growth Marketing Associate!\n\nLocation: Mumbai\nExperience: 2-4 years\n\nApply here: https://nykaa.com/careers/growth-marketing-associate',
+    posterRelationship: 'internal_can_refer',
+    hiringContactName: null,
+    functionLabel: 'Marketing',
+    postedAt: now - 3 * 60 * 60 * 1000,
+    lastConfirmedAt: now - 3 * 60 * 60 * 1000,
+  });
+
+  const posts: JobPost[] = [pImpactco, pMncInsurer, pSearchfirm, pFoodhak, pAnveshan, pNykaa];
 
   // -- The visible duplicate (§5.1): another alum shares message 5's post ---
 
@@ -805,7 +823,65 @@ export function buildSeed(now: number): AppState {
     ],
   );
 
-  const timelines = [reqA, reqB, reqC, reqD, reqE, reqF, reqG, reqH];
+  // §5.2 gives sent/accepted the SAME instant for "past due" and "auto-expired"
+  // (seven days, fourteen days) — so a referrer-owed row that is both overdue
+  // and still open after `runClock` is unreachable, and reqA/reqB above land on
+  // `expired`/`expired_unsubmitted` once the clock runs (as intended: they are
+  // the "what happens if nobody replies" examples). The three requests below
+  // are what keep the tracker non-empty, with real owed-by-you rows, for the
+  // referrer personas and for Karan, once the demo opens post-clock.
+
+  const reqI = buildRequestTimeline(
+    {
+      id: 'req_i_rohit_owes',
+      seekerId: 'm_fill_110',
+      referrerId: rohit.id,
+      companyId: 'c_impactco',
+      jobPostId: pImpactco.id,
+      roleUrl: null,
+      roleTitle: pImpactco.title,
+      resumeVersionId: null,
+      pitch: "I'd love an introduction to the People & Culture opening.",
+      createdAt: now - 3 * DAY_MS,
+    },
+    [],
+  );
+
+  const reqJ = buildRequestTimeline(
+    {
+      id: 'req_j_meera_owes',
+      seekerId: 'm_fill_112',
+      referrerId: meera.id,
+      companyId: 'c_foodhak',
+      jobPostId: pFoodhak.id,
+      roleUrl: null,
+      roleTitle: pFoodhak.title,
+      resumeVersionId: null,
+      pitch: 'Would love a referral for the Brand Marketing Manager role.',
+      createdAt: now - 9 * DAY_MS,
+    },
+    [{ to: 'accepted', role: 'referrer', at: now - 7 * DAY_MS, note: 'Meera agreed to refer.' }],
+  );
+
+  const reqK = buildRequestTimeline(
+    {
+      id: 'req_k_karan_live',
+      seekerId: karan.id,
+      referrerId: 'm_fill_9',
+      companyId: 'c_flipkart',
+      jobPostId: null,
+      roleUrl: 'https://flipkart.com/careers/234',
+      roleTitle: 'Strategy Manager',
+      resumeVersionId: null,
+      // Karan is looking quietly, away from his own employer (§6/D6) — this
+      // request is with an alum elsewhere, not at McKinsey.
+      pitch: 'Referral request for the Strategy Manager opening.',
+      createdAt: now - 2 * DAY_MS,
+    },
+    [],
+  );
+
+  const timelines = [reqA, reqB, reqC, reqD, reqE, reqF, reqG, reqH, reqI, reqJ, reqK];
   const requests: ReferralRequest[] = timelines.map((t) => t.request);
   const requestEvents: RequestEvent[] = timelines.flatMap((t) => t.events);
 
