@@ -10,6 +10,15 @@
  * identifies a role across four differently-worded forwards.
  */
 
+/**
+ * Params that identify the forward, not the role. Everything else is kept:
+ * `?utm_source=whatsapp` is noise, but `?jobId=456` is a different requisition.
+ */
+const TRACKING_PARAMS = [
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+  'fbclid', 'gclid', 'ref', 'source', 'src',
+];
+
 const TITLE_SYNONYMS: [RegExp, string][] = [
   [/\bsr\.?\b/gi, 'senior'],
   [/\bjr\.?\b/gi, 'junior'],
@@ -29,14 +38,27 @@ export function normaliseRoute(v: string): string {
       const u = new URL(raw);
       const host = u.host.toLowerCase().replace(/^www\./, '');
       const path = u.pathname.replace(/\/+$/, '');
-      return `${host}${path}`;
+      // Drop tracking params but KEEP the rest. Dropping the whole query string
+      // makes `?jobId=123` and `?jobId=456` collide, merging two real openings
+      // into one card and hiding one of them. Sorted so param order never
+      // affects the key.
+      for (const t of TRACKING_PARAMS) u.searchParams.delete(t);
+      u.searchParams.sort();
+      const query = u.searchParams.toString();
+      return `${host}${path}${query ? `?${query}` : ''}`;
     } catch {
       return raw.toLowerCase();
     }
   }
 
   const digits = raw.replace(/\D/g, '');
-  if (digits.length >= 10) return digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : digits;
+  if (digits.length >= 10) {
+    // Indian mobiles arrive as 8800029599, 08800029599 and +918800029599.
+    // All three are one person; failing to fold them produces duplicate cards.
+    if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+    if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
+    return digits;
+  }
   return raw.toLowerCase();
 }
 
