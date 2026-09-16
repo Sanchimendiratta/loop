@@ -15,7 +15,7 @@ import type { Application, Connection, FunctionArea, JobPost } from '../data/sch
 import { connectionBadge, connectionLine } from '../core/disclosure.ts';
 import { postAge } from '../core/freshness.ts';
 import { STATUS_LABEL } from '../core/applications.ts';
-import { Button, Chip, EmptyState, Tabs, cx } from './primitives.tsx';
+import { Button, Chip, EmptyState, cx } from './primitives.tsx';
 import { PostComposer } from './PostComposer.tsx';
 
 export interface BoardProps {
@@ -277,6 +277,28 @@ export function Board({ now }: BoardProps) {
           ))}
         </FilterGroup>
 
+        {/*
+         * Sort lives here, not in the Posted <th> where it started.
+         * `.stack-table thead` is clipped to rect(0,0,0,0) below 768px — correct
+         * for a stacked table, since the column names come from `data-label` —
+         * but the sort control was inside that <th>, so on a phone it rendered
+         * off-screen at x=759, `elementFromPoint` returned null, and a tap
+         * simply never landed. Sorting was unreachable on exactly the devices
+         * an India-first product is used on.
+         *
+         * Same trap as the "Post a job" button: a control parked inside a <th>
+         * inherits whatever the table does to its header. `aria-sort` stays on
+         * the <th>, which is where it belongs — it describes the column, while
+         * this chooses the ordering.
+         */}
+        <FilterGroup label="Sort">
+          {SORT_OPTIONS.map((o) => (
+            <FilterChip key={o.id} active={sort === o.id} onClick={() => setSort(o.id)}>
+              {o.label}
+            </FilterChip>
+          ))}
+        </FilterGroup>
+
         <FilterGroup label="Connection">
           <FilterChip active={connection === ALL} onClick={() => setConnection(ALL)}>
             Any connection
@@ -326,10 +348,7 @@ export function Board({ now }: BoardProps) {
                  * still the sort key under a different algorithm.
                  */}
                 <th scope="col" aria-sort={sort === 'recent' ? 'descending' : 'none'} className="px-3 py-2 align-bottom">
-                  <div className="flex flex-col gap-1">
-                    <span>Posted</span>
-                    <Tabs items={SORT_OPTIONS} active={sort} onChange={(id) => setSort(id as SortMode)} />
-                  </div>
+                  Posted
                 </th>
                 <th scope="col" className="px-3 py-2">
                   Action

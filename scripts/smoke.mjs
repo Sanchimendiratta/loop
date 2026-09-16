@@ -339,7 +339,7 @@ const UI_COMPONENT_COVERAGE_EXEMPT = {
     'renders inside Shell, not as a screen of its own — the Shell render above already mounts it and exercises its markup.',
   'primitives.tsx':
     'exports a library of building blocks (Button, Chip, Avatar, Modal, Field, Input, Select, Card, EmptyState, ' +
-    'Meter, Tabs) rather than a single screen-level component — it has no default render target of its own, and ' +
+    'Button, Chip, Field) rather than a single screen-level component — it has no default render target of its own, and ' +
     'every screen rendered above already exercises it.',
 };
 
