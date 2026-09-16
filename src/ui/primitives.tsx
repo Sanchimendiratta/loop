@@ -126,13 +126,29 @@ export function Modal({
 
   useEffect(() => {
     if (!open) return;
+    const FOCUSABLE =
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Tab') return;
+      const nodes = Array.from(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+      if (!nodes.length) return;
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      const active = document.activeElement;
+      // Wrap at both ends so focus cannot leave the dialog.
+      if (e.shiftKey && (active === first || !panel.current?.contains(active))) {
+        e.preventDefault();
+        last?.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first?.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
-    // Focus moves into the dialog so keyboard users are not left behind on the
-    // page underneath.
-    panel.current?.querySelector<HTMLElement>('input, textarea, select, button')?.focus();
+    // Prefer the first real input over the close button — form dialogs open ready to type.
+    const fields = panel.current?.querySelectorAll<HTMLElement>('input, textarea, select');
+    (fields?.[0] ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
