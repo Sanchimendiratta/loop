@@ -1,17 +1,23 @@
 import { useState } from 'react';
-import { getCurrentMember, listPersonas, pendingCases, setCurrentMember } from '../data/store.ts';
-import { Avatar, Select } from './primitives.tsx';
+import { getCurrentMember, listPersonas, myApplications, myPosts, pendingCases, setCurrentMember } from '../data/store.ts';
+import { Avatar, EmptyState, Select } from './primitives.tsx';
 import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
+import { makeGoogleIdentity } from './Login.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
-import { VerificationGate } from './VerificationGate.tsx';
+import { requestNewGoogleSignIn, VerificationGate } from './VerificationGate.tsx';
 import { useNow, useStoreVersion } from './useStore.ts';
 
-// Lite's nav is reshaped in Task 7 (Board · My applications · My posts ·
-// Admin); until then this is deliberately down to the two screens that
-// survived Task 1's prune.
-type View = 'board' | 'admin';
+/** Sentinel `<option>` values for the two "sign in fresh" entries below. Never a real member id, so `setCurrentMember` must never see one. */
+const NEW_XLRI_ACCOUNT = '__new_xlri__';
+const NEW_PERSONAL_ACCOUNT = '__new_personal__';
+
+// Lite's nav (Task 7): Board, the two personal sheets, and Admin for the one
+// member allowed to see it. `PostDetail`/`Directory`/`Tracker`/`Profile` do
+// not survive from v1.3 — Lite has no directory and no referral-request
+// object, so there is nothing left for those routes to show.
+type View = 'board' | 'applications' | 'posts' | 'admin';
 
 export function App() {
   useStoreVersion();
@@ -20,6 +26,28 @@ export function App() {
 
   function handleNavigate(id: string): void {
     setView(id as View);
+  }
+
+  /**
+   * The two sentinel options don't name a member, so they can't go through
+   * `setCurrentMember` — they hand a fabricated identity to
+   * `VerificationGate`'s "new sign-in" slot instead, which takes priority
+   * over whatever session is already active. This is the one way to reach
+   * the Get-verified form (screen 2) other than a truly first-ever visit:
+   * signing in with a second Google account without first signing out of the
+   * one already open, exactly as this switcher itself stays reachable no
+   * matter what the active session's gate state is.
+   */
+  function handleSwitcherChange(value: string): void {
+    if (value === NEW_XLRI_ACCOUNT) {
+      requestNewGoogleSignIn(makeGoogleIdentity('astra.xlri.ac.in'));
+      return;
+    }
+    if (value === NEW_PERSONAL_ACCOUNT) {
+      requestNewGoogleSignIn(makeGoogleIdentity('gmail.com'));
+      return;
+    }
+    setCurrentMember(value);
   }
 
   const member = getCurrentMember();
@@ -36,6 +64,8 @@ export function App() {
   const nav: NavItem[] = isVerified
     ? [
         { id: 'board', label: 'Board' },
+        { id: 'applications', label: 'My applications' },
+        { id: 'posts', label: 'My posts' },
         ...(member?.isAdmin ? [{ id: 'admin', label: 'Admin', badge: queueSize }] : []),
       ]
     : [];
@@ -60,7 +90,7 @@ export function App() {
           {member ? <Avatar name={member.name} size={26} /> : null}
           <Select
             value={member?.id ?? ''}
-            onChange={(e) => setCurrentMember(e.currentTarget.value)}
+            onChange={(e) => handleSwitcherChange(e.currentTarget.value)}
             className="w-56 !py-1 text-xs"
             aria-label="Switch persona"
           >
@@ -69,6 +99,8 @@ export function App() {
                 {p.name} — {p.status}
               </option>
             ))}
+            <option value={NEW_XLRI_ACCOUNT}>+ New Google sign-in — institute address</option>
+            <option value={NEW_PERSONAL_ACCOUNT}>+ New Google sign-in — personal address</option>
           </Select>
         </div>
       </div>
@@ -80,10 +112,42 @@ export function App() {
                 in place instead, so there is nothing yet for a post id to
                 open into. */}
             {view === 'board' ? <Board now={now} onOpenPost={() => {}} /> : null}
+            {view === 'applications' ? <MyApplicationsPlaceholder now={now} /> : null}
+            {view === 'posts' ? <MyPostsPlaceholder /> : null}
             {view === 'admin' ? <Admin now={now} /> : null}
           </Shell>
         </VerificationGate>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Placeholder, on purpose — same reduction `Board.tsx` and `Admin.tsx` went
+ * through: the nav entry and the store read (`myApplications`, already
+ * viewer-scoped) exist now so a later task builds the sheet against real
+ * data, but the sheet's layout is that task's job, not Task 7's.
+ */
+function MyApplicationsPlaceholder({ now }: { now: number }) {
+  const count = myApplications(now).length;
+  return (
+    <div className="p-6">
+      <EmptyState
+        title="My applications"
+        body={`You have ${count} application${count === 1 ? '' : 's'} on file. The tracker sheet is built in a later task, against this same myApplications() read.`}
+      />
+    </div>
+  );
+}
+
+function MyPostsPlaceholder() {
+  const count = myPosts().length;
+  return (
+    <div className="p-6">
+      <EmptyState
+        title="My posts"
+        body={`You have ${count} post${count === 1 ? '' : 's'} on the board. This sheet is built in a later task, against this same myPosts() read.`}
+      />
     </div>
   );
 }

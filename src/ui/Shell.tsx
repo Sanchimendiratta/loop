@@ -61,6 +61,12 @@ export function Shell({ nav, active, onNavigate, children }: ShellProps) {
             inert input here would promise the user a feature that does not
             exist — worse than a stale comment, which only misleads the next
             engineer. */}
+
+        {/* The notification bell lands in Task 13, reading `myNotifications()`.
+            This empty, unlabelled slot reserves its place in the header so
+            that task does not have to touch this layout — it renders nothing
+            itself and is not a tab stop. */}
+        <div className="ml-auto size-8" aria-hidden="true" />
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
