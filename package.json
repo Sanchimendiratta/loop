@@ -12,7 +12,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm run typecheck && npm test && npm run smoke && npm run build"
   },
   "keywords": [],
   "author": "",
