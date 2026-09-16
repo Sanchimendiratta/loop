@@ -485,6 +485,24 @@ export function posterStatsFor(postId: string): PostStats {
   };
 }
 
+/**
+ * Names of alumni who separately shared the same role (§5.1: corroboration,
+ * not clutter — the merged-duplicate case). Filtered through `canSeeMember`
+ * the same way every other read here is: a blocked sharer's name does not
+ * leak just because their forward happened to merge into a visible post.
+ */
+export function sharersFor(postId: string): string[] {
+  const viewer = viewerOrNull();
+  if (!viewer) return [];
+  const s = getState();
+  const byId = new Map(s.members.map((m) => [m.id, m]));
+  return s.shares
+    .filter((sh) => sh.jobPostId === postId)
+    .map((sh) => byId.get(sh.sharerId))
+    .filter((m): m is Member => m !== undefined && canSeeMember(viewer, m))
+    .map((m) => m.name);
+}
+
 const DIGEST_WINDOW_DAYS = 1;
 const APP_ORIGIN = 'https://loop.alumni';
 

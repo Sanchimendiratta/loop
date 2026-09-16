@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { getCurrentMember, listCases, listPersonas, setCurrentMember, trackerFor } from '../data/store.ts';
 import { Avatar, EmptyState, Select } from './primitives.tsx';
+import { Board } from './Board.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
@@ -21,6 +22,9 @@ export function App() {
   useStoreVersion();
   const now = useNow();
   const [view, setView] = useState<View>('board');
+  // Task 19 (post detail) reads this; the board just needs somewhere to hand
+  // the clicked post id.
+  const [, setOpenPostId] = useState<string | null>(null);
 
   const member = getCurrentMember();
   const isVerified = member?.status === 'verified';
@@ -84,7 +88,7 @@ export function App() {
       <div className="min-h-0 flex-1">
         <VerificationGate>
           <Shell nav={nav} active={view} onNavigate={(id) => setView(id as View)}>
-            {view === 'board' ? <Placeholder label="Board" /> : null}
+            {view === 'board' ? <Board now={now} onOpenPost={setOpenPostId} /> : null}
             {view === 'tracker' ? <Placeholder label="Tracker" /> : null}
             {view === 'directory' ? <Placeholder label="Directory" /> : null}
             {view === 'requests' ? <Placeholder label="Requests" /> : null}
