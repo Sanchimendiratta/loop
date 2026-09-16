@@ -327,6 +327,41 @@ describe('the clock, run repeatedly', () => {
   });
 });
 
+describe('the appeal path (§6)', () => {
+  test('a rejected member can appeal despite failing canSeeNetwork', () => {
+    const rejected = store.getState().members.find((m) => m.status === 'rejected')!;
+    store.setCurrentMember(rejected.id);
+    // The normal viewer gate refuses this member everything else in the store.
+    expect(store.listPosts(NOW)).toEqual([]);
+
+    const appeal = store.submitAppeal({
+      linkedinUrl: rejected.linkedinUrl ?? '',
+      batch: rejected.batch,
+      programme: rejected.programme,
+      nameAtGraduation: rejected.name,
+    });
+
+    expect(appeal.isAppeal).toBe(true);
+    expect(appeal.decision).toBe('pending');
+    expect(store.getState().members.find((m) => m.id === rejected.id)!.status).toBe('pending');
+  });
+
+  test('the one appeal §6 allows cannot be brought twice', () => {
+    const rejected = store.getState().members.find((m) => m.status === 'rejected')!;
+    store.setCurrentMember(rejected.id);
+    const evidence = {
+      linkedinUrl: rejected.linkedinUrl ?? '',
+      batch: rejected.batch,
+      programme: rejected.programme,
+      nameAtGraduation: rejected.name,
+    };
+    store.submitAppeal(evidence);
+    // The member's own latest case is now the appeal itself — still pending,
+    // not rejected — so a second call has nothing eligible to appeal.
+    expect(() => store.submitAppeal(evidence)).toThrow(RuleViolation);
+  });
+});
+
 describe('publishing — what is not a merge target', () => {
   test('a filled post is not merged into; the next forward starts a fresh card', () => {
     const existing = store.getState().posts[4];

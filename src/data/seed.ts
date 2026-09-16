@@ -676,6 +676,12 @@ export function buildSeed(now: number): AppState {
     { id: 'app_8', jobPostId: pAnveshan.id, memberId: 'm_fill_157', appliedAt: now - 38 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: now - 20 * DAY_MS },
     { id: 'app_9', jobPostId: pAnveshan.id, memberId: 'm_fill_158', appliedAt: now - 37 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: now - 20 * DAY_MS },
     { id: 'app_10', jobPostId: pAnveshan.id, memberId: 'm_fill_159', appliedAt: now - 36 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: now - 20 * DAY_MS },
+    // Ananya's own unanswered apply prompt, at least 14 days old (Task 22's
+    // ruling): without this, the tracker's `application` row kind is
+    // reachable from no persona at all, and §10's central claim — an overdue
+    // referral request and an unanswered apply prompt render identically —
+    // can never actually be seen.
+    { id: 'app_11', jobPostId: pAnveshan.id, memberId: ananya.id, appliedAt: now - 16 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: null },
   ];
 
   // -- Referral requests (§5.2 / §7.1), run through the real state machine --

@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
-import { getCurrentMember, myVerificationCase } from '../data/store.ts';
-import { Button, Card, cx } from './primitives.tsx';
+import { useState } from 'react';
+import { getCurrentMember, myVerificationCase, RuleViolation, submitAppeal } from '../data/store.ts';
+import type { VerificationCase } from '../data/schema.ts';
+import { Button, Card, cx, Field, Input } from './primitives.tsx';
 
 /**
  * D2: "an unverified account can see nothing." This is the whole product's
@@ -60,15 +62,7 @@ export function VerificationGate({ children }: { children: ReactNode }) {
       <GateScreen title="We couldn't verify your account" tone="stop">
         <p>{c?.notes || 'No reason was recorded for this decision.'}</p>
         {canAppeal ? (
-          <>
-            <Button variant="primary" size="sm" disabled>
-              Appeal this decision
-            </Button>
-            <p className="text-xs text-stone-500">
-              §6 allows one appeal, with new evidence, reviewed by a second admin. That flow isn't wired up in this
-              build yet.
-            </p>
-          </>
+          <AppealForm evidence={c.evidence} />
         ) : (
           <p className="text-xs text-stone-500">
             This decision is final — the one appeal §6 allows has already been used.
@@ -94,6 +88,78 @@ export function VerificationGate({ children }: { children: ReactNode }) {
         Loop is alumni-only (§6). Submit your verification details and a reviewer will confirm you within 48 hours.
       </p>
     </GateScreen>
+  );
+}
+
+/**
+ * §6: the one appeal a rejected member may bring, with new evidence.
+ *
+ * Prefilled from the rejected case's own submission, so a member correcting
+ * one wrong detail does not have to retype the rest. `submitAppeal` moves the
+ * member back to `pending` on success, so this component simply stops being
+ * rendered — `VerificationGate` re-reads `member.status` and switches
+ * branches on the very next commit, which is the confirmation.
+ */
+function AppealForm({ evidence }: { evidence: VerificationCase['evidence'] }) {
+  const [open, setOpen] = useState(false);
+  const [linkedinUrl, setLinkedinUrl] = useState(evidence.linkedinUrl);
+  const [nameAtGraduation, setNameAtGraduation] = useState(evidence.nameAtGraduation);
+  const [batch, setBatch] = useState(evidence.batch);
+  const [programme, setProgramme] = useState(evidence.programme);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <div className="flex flex-col items-center gap-2">
+        <Button variant="primary" size="sm" onClick={() => setOpen(true)}>
+          Appeal this decision
+        </Button>
+        <p className="text-xs text-stone-500">
+          §6 allows one appeal, with new evidence, reviewed by a second admin.
+        </p>
+      </div>
+    );
+  }
+
+  function handleSubmit() {
+    try {
+      submitAppeal({ linkedinUrl, batch, programme, nameAtGraduation });
+      setError(null);
+    } catch (e) {
+      if (e instanceof RuleViolation) {
+        setError(e.message);
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg bg-stone-50 p-3 text-left ring-1 ring-stone-200">
+      <Field label="LinkedIn URL">
+        <Input value={linkedinUrl} onChange={(e) => setLinkedinUrl(e.currentTarget.value)} />
+      </Field>
+      <Field label="Name at graduation">
+        <Input value={nameAtGraduation} onChange={(e) => setNameAtGraduation(e.currentTarget.value)} />
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Batch">
+          <Input type="number" value={batch} onChange={(e) => setBatch(Number(e.currentTarget.value))} />
+        </Field>
+        <Field label="Programme">
+          <Input value={programme} onChange={(e) => setProgramme(e.currentTarget.value)} />
+        </Field>
+      </div>
+      {error ? <p className="text-xs font-medium text-[var(--color-owed)]">{error}</p> : null}
+      <div className="flex gap-2">
+        <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button variant="primary" size="sm" onClick={handleSubmit}>
+          Submit appeal
+        </Button>
+      </div>
+    </div>
   );
 }
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { getCurrentMember, listCases, listPersonas, setCurrentMember, trackerFor } from '../data/store.ts';
-import { Avatar, EmptyState, Select } from './primitives.tsx';
+import { Avatar, Select } from './primitives.tsx';
+import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
 import { PostDetail } from './PostDetail.tsx';
 import { Directory } from './Directory.tsx';
@@ -16,15 +17,6 @@ import { VerificationGate } from './VerificationGate.tsx';
 import { useNow, useStoreVersion } from './useStore.ts';
 
 type View = 'board' | 'tracker' | 'directory' | 'requests' | 'admin';
-
-/** A screen a later task owns. Renders nothing but its own name. */
-function Placeholder({ label }: { label: string }) {
-  return (
-    <div className="p-8">
-      <EmptyState title={`${label} is on its way`} body="This screen is built in a later task." />
-    </div>
-  );
-}
 
 export function App() {
   useStoreVersion();
@@ -131,7 +123,7 @@ export function App() {
               )
             ) : null}
             {view === 'requests' ? <Requests now={now} /> : null}
-            {view === 'admin' ? <Placeholder label="Admin" /> : null}
+            {view === 'admin' ? <Admin now={now} /> : null}
           </Shell>
         </VerificationGate>
       </div>

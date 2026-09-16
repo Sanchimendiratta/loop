@@ -59,7 +59,7 @@ import { CONFIRM_PROMPT_DAYS, freshnessFor } from '../core/freshness.ts';
 import { sortPosts } from '../core/rank.ts';
 import { dedupeHash } from '../core/dedupe.ts';
 import { APPLICATION_PROMPT_DAY, applicationPromptDue, autoAdvanceFor, nudgeDueFor } from '../core/nudges.ts';
-import { decideCase } from '../core/verification.ts';
+import { canAppeal, decideCase } from '../core/verification.ts';
 import { addDays, daysBetween } from '../core/time.ts';
 
 // ---------------------------------------------------------------------------
@@ -350,9 +350,19 @@ function toPublicMember(viewer: Member, m: Member): PublicMember {
 function postsVisibleTo(viewer: Member, s: AppState): JobPost[] {
   const byId = new Map(s.members.map((m) => [m.id, m]));
   return s.posts.filter((p) => {
+    // §8: a report still awaiting a decision hides the post from the board —
+    // for everyone except an admin, who is the one person who has to be able
+    // to open it in order to decide the report at all. This is a moderation
+    // gate, not a privacy one: it does not touch `canSeeMember` and grants no
+    // bypass of a blocking member's row (checked below regardless).
+    if (postHasOpenReport(p.id, s) && !viewer.isAdmin) return false;
     const poster = byId.get(p.posterId);
     return poster ? canSeeMember(viewer, poster) : false;
   });
+}
+
+function postHasOpenReport(postId: string, s: AppState): boolean {
+  return s.reports.some((r) => r.targetType === 'post' && r.targetId === postId && r.resolvedAt === null);
 }
 
 export function listPosts(now: number): JobPost[] {
@@ -990,6 +1000,51 @@ export function decideVerification(
   return next;
 }
 
+/**
+ * §6: the one appeal a rejected member may bring, with new evidence.
+ *
+ * Deliberately does NOT go through `requireViewer` (which is exactly
+ * `canSeeNetwork`, and a rejected member fails it by construction) — an
+ * appeal is the one action a rejected account may still take, so gating it
+ * the normal way would lock the one door §6 opens. It reads
+ * `getCurrentMember()` directly instead, the same narrow exception
+ * `myVerificationCase` already makes for a member's own record.
+ *
+ * Refuses unless the member's own most recent case is a rejection that has
+ * not already been appealed (`canAppeal`), so this cannot be called twice —
+ * the second call's "latest case" is the appeal itself, still `pending`.
+ */
+export function submitAppeal(evidence: VerificationCase['evidence']): VerificationCase {
+  const s = getState();
+  const member = s.members.find((m) => m.id === s.currentMemberId);
+  if (!member) throw new RuleViolation('No active session.', 'no_session');
+
+  const original = myVerificationCase();
+  if (!original || !canAppeal(original)) {
+    throw new RuleViolation('This decision cannot be appealed.', 'cannot_appeal');
+  }
+
+  const now = Date.now();
+  const appeal: VerificationCase = {
+    id: nextId('case'),
+    memberId: member.id,
+    tier: original.tier,
+    evidence: { ...evidence },
+    decision: 'pending',
+    reviewerId: null,
+    decidedAt: null,
+    notes: '',
+    isAppeal: true,
+    submittedAt: now,
+  };
+  s.cases = [...s.cases, appeal];
+  // Back to pending: the member is neither verified nor rejected while a
+  // second admin is looking again (§6).
+  s.members = s.members.map((m) => (m.id === member.id ? { ...m, status: 'pending' } : m));
+  commit();
+  return appeal;
+}
+
 export function reportTarget(type: 'post' | 'member', id: string, reason: string): Report {
   const viewer = requireViewer();
   if (!reason.trim()) throw new RuleViolation('Say what is wrong with it.', 'missing_reason');
@@ -1014,6 +1069,68 @@ export function reportTarget(type: 'post' | 'member', id: string, reason: string
   }
   commit();
   return report;
+}
+
+/**
+ * The admin moderation queue (§8). Only what is still awaiting a decision —
+ * once resolved, a report drops out of here (Admin.tsx keeps no separate
+ * "resolved reports" list; the post's own state, or the member's, is the
+ * lasting record).
+ */
+export function listReports(): Report[] {
+  const viewer = viewerOrNull();
+  if (!viewer || !viewer.isAdmin) return [];
+  return getState()
+    .reports.filter((r) => r.resolvedAt === null)
+    .sort((a, b) => a.at - b.at);
+}
+
+function requireOpenReport(reportId: string): { viewer: Member; s: AppState; report: Report } {
+  const viewer = requireViewer();
+  if (!viewer.isAdmin) throw new RuleViolation('Admins only.', 'not_admin');
+  const s = getState();
+  const report = s.reports.find((r) => r.id === reportId);
+  if (!report) throw new RuleViolation('No such report.', 'unknown_report');
+  if (report.resolvedAt !== null) throw new RuleViolation('This report has already been resolved.', 'already_resolved');
+  return { viewer, s, report };
+}
+
+/**
+ * §8: a report upheld archives the post, or suspends the member and freezes
+ * every open request they are party to — nulling `stateOwner`/`nextUpdateDue`
+ * so neither the tracker nor the nudge engine keeps chasing an account that
+ * can no longer answer.
+ */
+export function upholdReport(reportId: string): Report {
+  const { s, report } = requireOpenReport(reportId);
+  const now = Date.now();
+
+  if (report.targetType === 'post') {
+    s.posts = s.posts.map((p) => (p.id === report.targetId && p.archivedAt === null ? { ...p, archivedAt: now } : p));
+  } else {
+    s.members = s.members.map((m) => (m.id === report.targetId ? { ...m, status: 'suspended' } : m));
+    s.requests = s.requests.map((r) => {
+      if (r.seekerId !== report.targetId && r.referrerId !== report.targetId) return r;
+      if (isTerminal(r.state)) return r;
+      return { ...r, stateOwner: null, nextUpdateDue: null };
+    });
+  }
+
+  const next: Report = { ...report, resolvedAt: now };
+  s.reports = s.reports.map((r) => (r.id === next.id ? next : r));
+  commit();
+  return next;
+}
+
+/** §8: dismissing a report clears it with no further action — a post it was
+ * hiding pending review reappears, because `postHasOpenReport` now reads false. */
+export function dismissReport(reportId: string): Report {
+  const { s, report } = requireOpenReport(reportId);
+  const now = Date.now();
+  const next: Report = { ...report, resolvedAt: now };
+  s.reports = s.reports.map((r) => (r.id === next.id ? next : r));
+  commit();
+  return next;
 }
 
 // ---------------------------------------------------------------------------
