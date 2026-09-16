@@ -1,11 +1,14 @@
 /**
  * The repository boundary.
  *
- * The only module that touches persistence, and the only place four rules live
- * (spec §4.1): the privacy filter, the duplicate-submission guard, referrer
- * capacity, and state transitions. They are here rather than in the screens
- * because a rule enforced in a dialog is a suggestion — any other code path
- * walks straight past it.
+ * The only module that touches persistence, and the only place two rules now
+ * live (spec §4.1): the privacy filter and the duplicate-POST merge rule.
+ * Lite dropped the referral-request object, and with it the duplicate-
+ * submission guard, referrer capacity and the state-transition machine that
+ * used to live here too — see `viewerOrNull` and `canSeeMember` below for what
+ * of the privacy filter survived that prune. Rules are enforced here rather
+ * than in the screens because a rule enforced in a dialog is a suggestion —
+ * any other code path walks straight past it.
  *
  * Swapping this for Supabase means reimplementing this file against Postgres
  * with RLS, and changing nothing above it. That is the entire reason the read
@@ -19,7 +22,6 @@ import type {
   ApplyMethod,
   Company,
   ConfirmState,
-  DeclineReason,
   DestinationType,
   JobPost,
   Member,
@@ -27,41 +29,27 @@ import type {
   PostApplication,
   PostShare,
   PosterRelationship,
-  PrivacySettings,
-  PublicMember,
-  ReferralRequest,
   Report,
-  RequestEvent,
-  RequestState,
-  ResumeVersion,
   VerificationCase,
 } from './schema.ts';
-import {
-  canSeeMember,
-  canSeeNetwork,
-  canSeeRequest,
-  visibleMembers,
-  visibleRequests,
-} from '../core/privacy.ts';
-import {
-  applyTransition,
-  canTransition,
-  isTerminal,
-  OWNER_BY_STATE,
-  RESPONSE_WINDOW_DAYS,
-  RuleViolation,
-} from '../core/requests.ts';
-// Re-exported so UI modules have one refusal type to catch, from the one
-// module they are allowed to import (`RuleViolation` otherwise lives in
-// `core/requests.ts`, which is not on the UI's import list).
-export { RuleViolation };
-import { duplicateSubmissionGuard, intakeCheck } from '../core/capacity.ts';
-import { CONFIRM_PROMPT_DAYS, freshnessFor } from '../core/freshness.ts';
+/**
+ * `RuleViolation`, relocated. It used to live in `core/requests.ts` (deleted
+ * with the referral-request state machine) but was never really about
+ * requests — every write in this file throws it, from a missing post title to
+ * an admin-only guard. UI modules still import it from here, which is why it
+ * is exported.
+ */
+export class RuleViolation extends Error {
+  code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = 'RuleViolation';
+    this.code = code;
+  }
+}
+import { freshnessFor } from '../core/freshness.ts';
 import { sortPosts } from '../core/rank.ts';
-import { dedupeHash } from '../core/dedupe.ts';
-import { APPLICATION_PROMPT_DAY, applicationPromptDue, autoAdvanceFor, nudgeDueFor } from '../core/nudges.ts';
-import { canAppeal, decideCase } from '../core/verification.ts';
-import { addDays, daysBetween } from '../core/time.ts';
+import { decideCase } from '../core/verification.ts';
 
 // ---------------------------------------------------------------------------
 // Public draft / projection shapes
@@ -88,40 +76,12 @@ export interface PostDraft {
   parseConfidence: number;
 }
 
-export interface RequestDraft {
-  referrerId: string;
-  companyId: string;
-  roleTitle: string;
-  pitch: string;
-  roleUrl: string | null;
-  jobPostId: string | null;
-}
-
 export interface PostStats {
   views: number;
   applied: number;
   heardBack: number;
   interviewing: number;
   outcomesUnknown: boolean;
-}
-
-export interface TrackerRow {
-  id: string;
-  kind: 'request' | 'application' | 'post';
-  title: string;
-  subtitle: string;
-  counterpartyName: string | null;
-  state: string;
-  owed: 'you' | 'them' | 'nobody';
-  dueAt: number | null;
-  overdueDays: number;
-  /** Real, store-maintained state (`ReferralRequest.lastNudgedAt`) — never
-   * derived from `overdueDays`, which is days past the due date and has no
-   * relationship to whether a nudge was ever sent. `null` for a request that
-   * has never been nudged, and always `null` for the `application`/`post`
-   * kinds, which the clock never nudges at all. */
-  lastNudgedAt: number | null;
-  cta: { label: string; action: string } | null;
 }
 
 export interface LoadOptions {
@@ -290,30 +250,38 @@ export interface Persona {
  *
  * Deliberately NOT viewer-scoped — picking which account to sign in as is a
  * pre-authentication choice, not a network read, and gating it on
- * `canSeeNetwork` would strand a session on an unverified persona with no way
- * back to a verified one. It is safe precisely because it is this narrow: no
- * company, no privacy settings, no contact fields — nothing `toPublicMember`
- * exists to strip.
+ * verified-only status would strand a session on an unverified persona with
+ * no way back to a verified one. It is safe precisely because it is this
+ * narrow: no company, no privacy settings, no contact fields.
  */
 export function listPersonas(): Persona[] {
   return getState().members.map((m) => ({ id: m.id, name: m.name, status: m.status }));
 }
 
 /**
- * Rule 1 — the privacy filter. Every read in this file begins here.
- *
- *   const viewer = getCurrentMember();
- *   if (!canSeeNetwork(viewer)) return [];
- *
- * D2 is explicit that an unverified account sees nothing, and that this is an
- * empty result rather than a redirect. There is NO admin exception: an admin
- * whose own membership lapsed reads nothing either, and `canSeeMember` gives
- * admins no bypass of a seeker's block (see `core/privacy.ts`).
+ * D2, relocated. `core/privacy.ts` existed mostly to protect a seeker from
+ * discovery in a directory, and Lite has no directory — but "an unverified
+ * account can see nothing" is the product itself, not a directory feature, so
+ * it lives here now. Every read begins with this.
  */
 function viewerOrNull(): Member | null {
-  const viewer = getCurrentMember();
-  if (!canSeeNetwork(viewer)) return null;
-  return viewer;
+  const s = getState();
+  const me = s.members.find((m) => m.id === s.currentMemberId);
+  return me && me.status === 'verified' ? me : null;
+}
+
+/**
+ * D6, relocated from `core/privacy.ts` alongside `viewerOrNull`. A seeker's
+ * block is enforced on the TARGET, not the viewer — Karan blocks his own
+ * employer, and it is his row that must refuse to render, wherever it is
+ * asked for. No admin exception: `postsVisibleTo` and `applicationsFor` are
+ * the only two callers left, and neither grants one.
+ */
+function canSeeMember(viewer: Member, target: Member): boolean {
+  if (viewer.id === target.id) return true;
+  if (target.privacy.blockedMemberIds.includes(viewer.id)) return false;
+  if (viewer.companyId && target.privacy.blockedCompanyIds.includes(viewer.companyId)) return false;
+  return true;
 }
 
 /** The same guard for writes, where the honest answer is a refusal. */
@@ -330,37 +298,14 @@ function requireViewer(): Member {
 // ---------------------------------------------------------------------------
 
 /**
- * Field scoping, which is a different job from row scoping.
- *
- * Deciding WHICH members a viewer sees does not help if every row they do see
- * carries `privacy.blockedCompanyIds` — reading that Karan blocked his own
- * employer discloses that he is job-searching, the exact fact D6 exists to
- * protect. `googleSub` is an auth credential, `caps` is a referrer's private
- * intake setting, and an email address is a member's to give out. All four come
- * off on the way out, and the return TYPE is the enforcement: a screen cannot
- * render a blocked list it was never handed.
- *
- * No admin exception. The admin console reads `listCases`, which carries its
- * own evidence, and `getCurrentMember()` still returns the full `Member` —
- * that one is you.
- */
-function toPublicMember(viewer: Member, m: Member): PublicMember {
-  const { googleSub, privacy, caps, email, ...rest } = m;
-  void googleSub;
-  void privacy;
-  void caps;
-  return { ...rest, email: viewer.id === m.id ? email : null };
-}
-
-/**
  * A post whose poster is invisible to the viewer is invisible too: a blocked
  * member must not be discoverable via their own posts (§6/D6).
  *
  * This is the single source of truth for post visibility. Every read of
- * `s.posts` — stats, the tracker, write guards, the digest, the board —
- * must come from here rather than re-deriving the rule against `s.posts`
- * directly. A second predicate drifts the moment one of these conditions
- * changes; it already did, four times, before this comment existed.
+ * `s.posts` — stats, write guards, the board — must come from here rather
+ * than re-deriving the rule against `s.posts` directly. A second predicate
+ * drifts the moment one of these conditions changes; it already did, four
+ * times, before this comment existed.
  */
 function postsVisibleTo(viewer: Member, s: AppState): JobPost[] {
   const byId = new Map(s.members.map((m) => [m.id, m]));
@@ -397,90 +342,10 @@ export function getPost(id: string): JobPost | null {
   return postsVisibleTo(viewer, getState()).find((p) => p.id === id) ?? null;
 }
 
-/**
- * The visible roster, unfiltered by status: a pending or suspended member is
- * still a row an admin console and a moderation view need to render. Screens
- * wanting "alumni you could ask" want `alumniAt`.
- */
-export function listMembers(): PublicMember[] {
-  const viewer = viewerOrNull();
-  if (!viewer) return [];
-  return visibleMembers(viewer, getState().members).map((m) => toPublicMember(viewer, m));
-}
-
-export function getMember(id: string): PublicMember | null {
-  const viewer = viewerOrNull();
-  if (!viewer) return null;
-  const target = getState().members.find((m) => m.id === id);
-  if (!target) return null;
-  return canSeeMember(viewer, target) ? toPublicMember(viewer, target) : null;
-}
-
 export function listCompanies(): Company[] {
   const viewer = viewerOrNull();
   if (!viewer) return [];
   return [...getState().companies];
-}
-
-/** Verified, visible alumni at one company — the referrer picker's source. */
-export function alumniAt(companyId: string): PublicMember[] {
-  const viewer = viewerOrNull();
-  if (!viewer) return [];
-  return visibleMembers(viewer, getState().members)
-    .filter((m) => m.companyId === companyId && m.status === 'verified')
-    .map((m) => toPublicMember(viewer, m));
-}
-
-export interface ReferralAvailability {
-  accepting: boolean;
-  reason: 'not_open' | 'paused' | 'at_capacity' | 'monthly_cap' | null;
-}
-
-/**
- * Whether a prospective referrer can currently take another ask (DL1/§7.1),
- * without exposing `caps` itself — that field is private intake settings, not
- * public data (see `toPublicMember`). The bridge on a post's detail view
- * needs exactly this one boolean to tell a paused or at-capacity referrer's
- * OWN state apart from a seeker-side limit — there is no seeker-side limit.
- */
-export function referralAvailabilityFor(memberId: string, now: number = Date.now()): ReferralAvailability {
-  const viewer = viewerOrNull();
-  if (!viewer) return { accepting: false, reason: null };
-  const target = getState().members.find((m) => m.id === memberId);
-  if (!target || !canSeeMember(viewer, target)) return { accepting: false, reason: null };
-  // `upholdReport` suspends a member and freezes their requests, but never
-  // touches `openToReferring` or `caps` — `intakeCheck` alone would keep
-  // reading whatever intake state they had before suspension. Checked here,
-  // ahead of `intakeCheck`, so a suspension always reads as "not open to
-  // referring" (a reason the UI already renders) regardless of their caps.
-  if (target.status === 'suspended') return { accepting: false, reason: 'not_open' };
-  const { accepting, reason } = intakeCheck(target, getState().requests, now);
-  return { accepting, reason: reason as ReferralAvailability['reason'] };
-}
-
-export function listRequests(): ReferralRequest[] {
-  const viewer = viewerOrNull();
-  if (!viewer) return [];
-  return visibleRequests(viewer, getState().requests);
-}
-
-export function getRequest(id: string): ReferralRequest | null {
-  const viewer = viewerOrNull();
-  if (!viewer) return null;
-  const req = getState().requests.find((r) => r.id === id);
-  if (!req) return null;
-  return canSeeRequest(viewer, req) ? req : null;
-}
-
-export function requestEventsFor(id: string): RequestEvent[] {
-  const viewer = viewerOrNull();
-  if (!viewer) return [];
-  const s = getState();
-  const req = s.requests.find((r) => r.id === id);
-  // The timeline inherits the request's visibility; it is the same private
-  // 1:1 object seen end-on.
-  if (!req || !canSeeRequest(viewer, req)) return [];
-  return s.requestEvents.filter((e) => e.requestId === id).sort((a, b) => a.at - b.at);
 }
 
 /**
@@ -545,66 +410,72 @@ export function posterStatsFor(postId: string): PostStats {
   };
 }
 
-/**
- * Names of alumni who separately shared the same role (§5.1: corroboration,
- * not clutter — the merged-duplicate case). Filtered through `canSeeMember`
- * the same way every other read here is: a blocked sharer's name does not
- * leak just because their forward happened to merge into a visible post.
- */
-export function sharersFor(postId: string): string[] {
-  const viewer = viewerOrNull();
-  if (!viewer) return [];
-  const s = getState();
-  const byId = new Map(s.members.map((m) => [m.id, m]));
-  return s.shares
-    .filter((sh) => sh.jobPostId === postId)
-    .map((sh) => byId.get(sh.sharerId))
-    .filter((m): m is Member => m !== undefined && canSeeMember(viewer, m))
-    .map((m) => m.name);
-}
-
-const DIGEST_WINDOW_DAYS = 1;
-const APP_ORIGIN = 'https://loop.alumni';
-
-function postLink(id: string): string {
-  const origin = typeof location === 'undefined' ? APP_ORIGIN : location.origin;
-  return `${origin}/post/${id}`;
-}
-
-function companyLabel(post: JobPost, s: AppState): string {
-  if (post.companyId) {
-    return s.companies.find((c) => c.id === post.companyId)?.name ?? 'Undisclosed';
-  }
-  return post.confidentialDescriptor ?? 'Undisclosed';
-}
-
-/**
- * D17: a block of text a human copies into the WhatsApp group. Nothing here
- * posts anywhere — the integration is a person and their clipboard, which is
- * why every line has to stand alone with a link on it.
- */
-export function whatsappDigest(now: number): string {
-  const viewer = viewerOrNull();
-  if (!viewer) return '';
-  const s = getState();
-  const fresh = postsVisibleTo(viewer, s)
-    .filter((p) => p.archivedAt === null && daysBetween(p.postedAt, now) < DIGEST_WINDOW_DAYS)
-    .sort((a, b) => b.postedAt - a.postedAt);
-
-  const header =
-    fresh.length === 0
-      ? `${s.school.name} on Loop — no new roles in the last 24 hours.`
-      : `${s.school.name} on Loop — ${fresh.length} new role${fresh.length === 1 ? '' : 's'} today:`;
-
-  const lines = fresh.map((p) => `• ${p.title} — ${companyLabel(p, s)} — ${postLink(p.id)}`);
-  return [header, ...lines].join('\n');
-}
-
 // ---------------------------------------------------------------------------
 // Writes — posts
 // ---------------------------------------------------------------------------
 
 const CONSENT_REQUIRED_DESTINATIONS: DestinationType[] = ['named_person', 'external_recruiter'];
+
+/**
+ * Duplicate-post detection (§5.1), relocated from `core/dedupe.ts`. Lite drops
+ * the WhatsApp digest and the sharer-name summary that module also carried,
+ * but the merge rule itself is still load-bearing: `publishPost` below still
+ * merges four alumni forwarding the same JD into one card instead of four.
+ * The key is the apply route plus the role title — the route is what actually
+ * identifies a role across differently-worded forwards.
+ */
+const TRACKING_PARAMS = [
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+  'fbclid', 'gclid', 'ref', 'source', 'src',
+];
+
+const TITLE_SYNONYMS: [RegExp, string][] = [
+  [/\bsr\.?\b/gi, 'senior'],
+  [/\bjr\.?\b/gi, 'junior'],
+  [/\bmgr\.?\b/gi, 'manager'],
+  [/\bassoc\.?\b/gi, 'associate'],
+  [/\bvp\b/gi, 'vice president'],
+];
+
+function normaliseRoute(v: string): string {
+  const raw = String(v ?? '').trim();
+  if (!raw) return '';
+
+  if (raw.includes('@') && !raw.startsWith('http')) return raw.toLowerCase();
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const host = u.host.toLowerCase().replace(/^www\./, '');
+      const path = u.pathname.replace(/\/+$/, '');
+      for (const t of TRACKING_PARAMS) u.searchParams.delete(t);
+      u.searchParams.sort();
+      const query = u.searchParams.toString();
+      return `${host}${path}${query ? `?${query}` : ''}`;
+    } catch {
+      return raw.toLowerCase();
+    }
+  }
+
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length >= 10) {
+    if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+    if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
+    return digits;
+  }
+  return raw.toLowerCase();
+}
+
+function normaliseTitle(t: string): string {
+  let out = String(t ?? '').toLowerCase();
+  for (const [re, to] of TITLE_SYNONYMS) out = out.replace(re, to);
+  return out.replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** A stable, readable key. Not cryptographic — collisions here are cheap. */
+function dedupeHash(applyValue: string, title: string): string {
+  return `${normaliseRoute(applyValue)}::${normaliseTitle(title)}`;
+}
 
 // The real archive rule (`freshnessFor(...).shouldArchive`, the same one
 // `runClock` uses), not a second guess at it. `reset()` deliberately never
@@ -839,276 +710,8 @@ export function requestContactRemoval(postId: string): JobPost {
 }
 
 // ---------------------------------------------------------------------------
-// Writes — referral requests
-// ---------------------------------------------------------------------------
-
-function appendEvent(
-  requestId: string,
-  actorId: string | null,
-  fromState: RequestState | null,
-  toState: RequestState,
-  note: string,
-  at: number,
-): void {
-  const s = getState();
-  s.requestEvents = [
-    ...s.requestEvents,
-    { id: nextId('ev'), requestId, actorId, fromState, toState, note, at },
-  ];
-}
-
-export function sendRequest(draft: RequestDraft): ReferralRequest {
-  const viewer = requireViewer();
-  const s = getState();
-  const now = Date.now();
-
-  const referrer = s.members.find((m) => m.id === draft.referrerId);
-  if (!referrer || !canSeeMember(viewer, referrer)) {
-    throw new RuleViolation('No such member.', 'unknown_referrer');
-  }
-  if (referrer.id === viewer.id) {
-    throw new RuleViolation('You cannot ask yourself for a referral.', 'self_request');
-  }
-  if (!draft.roleTitle.trim()) {
-    throw new RuleViolation('Name the role you want referring for.', 'missing_role_title');
-  }
-  if (!s.companies.some((c) => c.id === draft.companyId)) {
-    throw new RuleViolation('No such company.', 'unknown_company');
-  }
-
-  // Rule 3 — referrer capacity. Volume is controlled at the RECEIVING end.
-  //
-  // DL1: there is deliberately NO seeker-side quota here. No max open
-  // requests, no per-company limit, no block on opening a new request while an
-  // earlier loop is un-closed. A seeker in a bad month sending ten requests is
-  // not the failure mode this product has; a referrer buried in requests is.
-  // If you are about to add a check on `openRequestsFor(viewer.id, ...)` or on
-  // how many requests the seeker already has at this company — don't. That is
-  // the rule DL1 removed on purpose, and the tracker plus the nudge engine are
-  // what keep loops closed instead.
-  const intake = intakeCheck(referrer, s.requests, now);
-  if (!intake.accepting) {
-    throw new RuleViolation(
-      intake.autoDeclineMessage ?? `${referrer.name} is not taking referral requests right now.`,
-      `intake_${intake.reason ?? 'closed'}`,
-    );
-  }
-
-  const request: ReferralRequest = {
-    id: nextId('req'),
-    seekerId: viewer.id,
-    referrerId: referrer.id,
-    companyId: draft.companyId,
-    jobPostId: draft.jobPostId,
-    roleUrl: draft.roleUrl,
-    roleTitle: draft.roleTitle.trim(),
-    resumeVersionId: viewer.resumeVersionId,
-    pitch: draft.pitch,
-    state: 'sent',
-    stateOwner: 'referrer',
-    declineReason: null,
-    nextUpdateDue: addDays(now, RESPONSE_WINDOW_DAYS),
-    nudgeCount: 0,
-    lastNudgedAt: null,
-    createdAt: now,
-    updatedAt: now,
-  };
-  s.requests = [...s.requests, request];
-  appendEvent(request.id, viewer.id, null, 'sent', 'Request sent.', now);
-  commit();
-  return request;
-}
-
-/**
- * Rule 4 — state transitions.
- *
- * The viewer's role is resolved from the request itself, never passed in: a
- * caller that could name its own role could name the other side's. An admin
- * may READ a request (§4.1) but may not drive it — nobody accepts a referral
- * on a referrer's behalf.
- */
-export function advanceRequest(
-  id: string,
-  to: RequestState,
-  opts: { declineReason?: DeclineReason; note?: string } = {},
-): ReferralRequest {
-  const viewer = requireViewer();
-  const s = getState();
-  const request = s.requests.find((r) => r.id === id);
-  if (!request || !canSeeRequest(viewer, request)) {
-    throw new RuleViolation('No such request.', 'unknown_request');
-  }
-
-  const role: 'seeker' | 'referrer' | null =
-    viewer.id === request.seekerId ? 'seeker' : viewer.id === request.referrerId ? 'referrer' : null;
-  if (role === null) {
-    throw new RuleViolation('Only the seeker or the referrer can move a request.', 'not_a_party');
-  }
-
-  const now = Date.now();
-  // Throws on an illegal edge or the wrong actor. Refused, never corrected.
-  const next = applyTransition(request, to, role, now, { declineReason: opts.declineReason });
-
-  // Rule 2 — the duplicate-submission guard. One seeker, one role, one
-  // submission. Several alumni OFFERING to refer the same person is fine and
-  // common (that is why this is not checked in `sendRequest`); two of them
-  // actually filing costs a referrer their bonus and creates an ATS conflict
-  // on the company's side (§8).
-  if (to === 'submitted') {
-    const clash = duplicateSubmissionGuard(
-      request.seekerId,
-      request.companyId,
-      request.roleTitle,
-      s.requests.filter((r) => r.id !== request.id),
-    );
-    if (clash) {
-      throw new RuleViolation(
-        `${request.roleTitle} has already been submitted for this seeker at this company.`,
-        'duplicate_submission',
-      );
-    }
-  }
-
-  s.requests = s.requests.map((r) => (r.id === next.id ? next : r));
-  appendEvent(next.id, viewer.id, request.state, to, opts.note ?? '', now);
-  commit();
-  return next;
-}
-
-// ---------------------------------------------------------------------------
 // Writes — member settings, admin, moderation
 // ---------------------------------------------------------------------------
-
-function replaceMember(next: Member): Member {
-  const s = getState();
-  s.members = s.members.map((m) => (m.id === next.id ? next : m));
-  commit();
-  return next;
-}
-
-/** Rule 3's control surface: a referrer sets their own intake, nobody else. */
-export function setCaps(caps: Member['caps']): Member {
-  const viewer = requireViewer();
-  if (caps.maxOpen < 0 || caps.maxPerMonth < 0) {
-    throw new RuleViolation('Caps cannot be negative.', 'invalid_caps');
-  }
-  return replaceMember({ ...viewer, caps: { ...caps } });
-}
-
-export function setPrivacy(privacy: PrivacySettings): Member {
-  const viewer = requireViewer();
-  return replaceMember({
-    ...viewer,
-    privacy: {
-      confidentialSearch: privacy.confidentialSearch,
-      blockedCompanyIds: [...new Set(privacy.blockedCompanyIds)],
-      blockedMemberIds: [...new Set(privacy.blockedMemberIds)].filter((id) => id !== viewer.id),
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Writes — profile (§7.4)
-// ---------------------------------------------------------------------------
-
-export interface ProfileEdit {
-  name: string;
-  batch: number;
-  programme: string;
-  companyId: string | null;
-  title: string | null;
-  function: string | null;
-  location: string | null;
-  linkedinUrl: string | null;
-  openToReferring: boolean;
-}
-
-/**
- * The viewer's own profile fields — never anyone else's. Reached the same way
- * `setCaps`/`setPrivacy` are: `getCurrentMember()`, never `getMember()`.
- *
- * The LinkedIn URL is stored as exactly the string it is given. §7.4 is
- * absolute that nothing in this product fetches, previews or validates it
- * against the network — enforced here by omission: there is no fetch to
- * remove.
- */
-export function setProfile(fields: ProfileEdit): Member {
-  const viewer = requireViewer();
-  if (!fields.name.trim()) {
-    throw new RuleViolation('A profile needs a name.', 'missing_name');
-  }
-  if (!fields.programme.trim()) {
-    throw new RuleViolation('A profile needs a programme.', 'missing_programme');
-  }
-  // `Number('') === 0`, and an `<input type="number">` yields `''` for any
-  // invalid entry — so clearing the field would otherwise write a phantom
-  // `0` rather than throwing. That `0` would then appear in the directory's
-  // batch filter and render as "PGDM · 0". Validated here, at the store
-  // boundary, rather than silently clamped: a silently discarded edit is its
-  // own bug.
-  if (!Number.isFinite(fields.batch) || fields.batch < 1950 || fields.batch > 2100) {
-    throw new RuleViolation('Give a graduation year between 1950 and 2100.', 'invalid_batch');
-  }
-  return replaceMember({
-    ...viewer,
-    name: fields.name.trim(),
-    batch: fields.batch,
-    programme: fields.programme.trim(),
-    companyId: fields.companyId,
-    title: fields.title?.trim() || null,
-    function: fields.function?.trim() || null,
-    location: fields.location?.trim() || null,
-    linkedinUrl: fields.linkedinUrl?.trim() || null,
-    openToReferring: fields.openToReferring,
-  });
-}
-
-/**
- * The viewer's current resume — filename only. No admin exception and no
- * lookup by id: a resume is exactly as private as the profile it belongs to,
- * and the only resume this function will ever hand back is the caller's own.
- */
-export function myResume(): ResumeVersion | null {
-  const viewer = viewerOrNull();
-  if (!viewer || !viewer.resumeVersionId) return null;
-  return getState().resumes.find((r) => r.id === viewer.resumeVersionId) ?? null;
-}
-
-/**
- * Records a new resume version by filename only. No file is ever read here —
- * there is nothing in this function that could read one, which is the point:
- * the browser hands over a `File` object on selection, and all that is kept
- * of it is the `.name` the caller already extracted before calling this.
- */
-export function uploadResume(filename: string): ResumeVersion {
-  const viewer = requireViewer();
-  const name = filename.trim();
-  if (!name) throw new RuleViolation('Choose a file to upload.', 'missing_filename');
-  const s = getState();
-  const resume: ResumeVersion = { id: nextId('res'), memberId: viewer.id, filename: name, uploadedAt: Date.now() };
-  s.resumes = [...s.resumes, resume];
-  replaceMember({ ...viewer, resumeVersionId: resume.id });
-  return resume;
-}
-
-/**
- * The current member's own verification case — evidence and decision.
- *
- * `listCases()` is the admin queue and stays admin-only, gated on
- * `canSeeNetwork`. But the verification gate has to show a pending or
- * rejected member the evidence THEY submitted and the reason THEY were
- * rejected, precisely when `canSeeNetwork` says no — that is not a network
- * read, it is a receipt for their own submission. Most recent case first, so
- * an appeal (a resubmission) is what the gate shows, not the original.
- */
-export function myVerificationCase(): VerificationCase | null {
-  const s = getState();
-  const me = s.members.find((m) => m.id === s.currentMemberId);
-  if (!me) return null;
-  const mine = s.cases.filter((c) => c.memberId === me.id);
-  if (mine.length === 0) return null;
-  return mine.reduce((latest, c) => (c.submittedAt > latest.submittedAt ? c : latest));
-}
 
 export function decideVerification(
   caseId: string,
@@ -1143,51 +746,6 @@ export function decideVerification(
   }
   commit();
   return next;
-}
-
-/**
- * §6: the one appeal a rejected member may bring, with new evidence.
- *
- * Deliberately does NOT go through `requireViewer` (which is exactly
- * `canSeeNetwork`, and a rejected member fails it by construction) — an
- * appeal is the one action a rejected account may still take, so gating it
- * the normal way would lock the one door §6 opens. It reads
- * `getCurrentMember()` directly instead, the same narrow exception
- * `myVerificationCase` already makes for a member's own record.
- *
- * Refuses unless the member's own most recent case is a rejection that has
- * not already been appealed (`canAppeal`), so this cannot be called twice —
- * the second call's "latest case" is the appeal itself, still `pending`.
- */
-export function submitAppeal(evidence: VerificationCase['evidence']): VerificationCase {
-  const s = getState();
-  const member = s.members.find((m) => m.id === s.currentMemberId);
-  if (!member) throw new RuleViolation('No active session.', 'no_session');
-
-  const original = myVerificationCase();
-  if (!original || !canAppeal(original)) {
-    throw new RuleViolation('This decision cannot be appealed.', 'cannot_appeal');
-  }
-
-  const now = Date.now();
-  const appeal: VerificationCase = {
-    id: nextId('case'),
-    memberId: member.id,
-    tier: original.tier,
-    evidence: { ...evidence },
-    decision: 'pending',
-    reviewerId: null,
-    decidedAt: null,
-    notes: '',
-    isAppeal: true,
-    submittedAt: now,
-  };
-  s.cases = [...s.cases, appeal];
-  // Back to pending: the member is neither verified nor rejected while a
-  // second admin is looking again (§6).
-  s.members = s.members.map((m) => (m.id === member.id ? { ...m, status: 'pending' } : m));
-  commit();
-  return appeal;
 }
 
 export function reportTarget(type: 'post' | 'member', id: string, reason: string): Report {
@@ -1249,12 +807,7 @@ function requireOpenReport(reportId: string): { viewer: Member; s: AppState; rep
   return { viewer, s, report };
 }
 
-/**
- * §8: a report upheld archives the post, or suspends the member and freezes
- * every open request they are party to — nulling `stateOwner`/`nextUpdateDue`
- * so neither the tracker nor the nudge engine keeps chasing an account that
- * can no longer answer.
- */
+/** §8: a report upheld archives the post, or suspends the member. */
 export function upholdReport(reportId: string): Report {
   const { s, report } = requireOpenReport(reportId);
   const now = Date.now();
@@ -1263,11 +816,6 @@ export function upholdReport(reportId: string): Report {
     s.posts = s.posts.map((p) => (p.id === report.targetId && p.archivedAt === null ? { ...p, archivedAt: now } : p));
   } else {
     s.members = s.members.map((m) => (m.id === report.targetId ? { ...m, status: 'suspended' } : m));
-    s.requests = s.requests.map((r) => {
-      if (r.seekerId !== report.targetId && r.referrerId !== report.targetId) return r;
-      if (isTerminal(r.state)) return r;
-      return { ...r, stateOwner: null, nextUpdateDue: null };
-    });
   }
 
   const next: Report = { ...report, resolvedAt: now };
@@ -1295,52 +843,14 @@ export function dismissReport(reportId: string): Report {
  * Time passing, applied to the data.
  *
  * Not viewer-scoped, and deliberately so: the clock has no viewer. Gating it
- * on whoever happens to be signed in would mean a request expires or a post
- * archives depending on who last opened the app.
+ * on whoever happens to be signed in would mean a post archives depending on
+ * who last opened the app. Lite dropped the referral-request state machine
+ * this used to also advance (auto-expiry, nudges) along with the nudge
+ * engine that drove it — post archiving is the whole clock now.
  */
 export function runClock(now: number): void {
   const s = getState();
   let changed = false;
-
-  const requests: ReferralRequest[] = [];
-  for (const request of s.requests) {
-    const to = autoAdvanceFor(request, now);
-    if (to !== null && canTransition(request.state, to)) {
-      const next = applyTransition(request, to, 'system', now);
-      appendEvent(request.id, null, request.state, to, `Auto-advanced to ${to}.`, now);
-      requests.push(next);
-      changed = true;
-      continue;
-    }
-    // Nudges are what make `autoAdvanceFor`'s no-response branch reachable, so
-    // the clock has to send them. Exactly one person is nudged: whoever
-    // `stateOwner` says owes the next update (§5.2).
-    const nudge = nudgeDueFor(request, now);
-    // At most one nudge per request per day, however far behind the schedule we are.
-    // Without this a stale request catches up its whole nudge sequence in successive
-    // minute-ticks rather than over days.
-    const nudgeAllowedToday = request.lastNudgedAt === null || daysBetween(request.lastNudgedAt, now) >= 1;
-    if (nudge.due && nudgeAllowedToday && !isTerminal(request.state)) {
-      const nudgeNumber = request.nudgeCount + 1;
-      // The timeline has to show the chasing, or a member's history jumps
-      // straight from `submitted` to `no_response` with nothing in between and
-      // the auto-advance looks arbitrary. A nudge is not a transition, so
-      // `fromState` and `toState` are both the state it was sent about.
-      appendEvent(
-        request.id,
-        null,
-        request.state,
-        request.state,
-        `Nudge ${nudgeNumber} sent to the ${nudge.target ?? 'owner'}.`,
-        now,
-      );
-      requests.push({ ...request, nudgeCount: nudgeNumber, lastNudgedAt: now });
-      changed = true;
-      continue;
-    }
-    requests.push(request);
-  }
-  if (changed) s.requests = requests;
 
   let postsChanged = false;
   const posts = s.posts.map((post) => {
@@ -1354,147 +864,8 @@ export function runClock(now: number): void {
     changed = true;
   }
 
-  // Note what is NOT here: application prompts. `applicationPromptDue` goes
-  // false once `promptedAt` is stamped, so stamping it from the clock would
-  // silently drop the row off the applicant's tracker before they answered.
-  // `recordOutcome` stamps it — when the member has actually replied.
-
   // A tick that changed nothing must not commit. The UI runs this every 60
   // seconds, and committing regardless would hand React fresh array identities
   // sixty times a minute and re-render the whole app for no reason.
   if (changed) commit();
-}
-
-// ---------------------------------------------------------------------------
-// The tracker (§10)
-// ---------------------------------------------------------------------------
-
-const REQUEST_CTA: Record<'sent' | 'accepted' | 'submitted' | 'recruiter_contact' | 'interviewing', { label: string; action: string }> = {
-  sent: { label: 'Accept or decline', action: 'respond_to_request' },
-  accepted: { label: 'Mark as submitted', action: 'mark_submitted' },
-  submitted: { label: 'Any news yet?', action: 'update_request_outcome' },
-  recruiter_contact: { label: 'Any news yet?', action: 'update_request_outcome' },
-  interviewing: { label: 'Log the outcome', action: 'update_request_outcome' },
-};
-
-const STATE_LABEL: Record<RequestState, string> = {
-  sent: 'Awaiting a reply',
-  accepted: 'Accepted — not yet submitted',
-  submitted: 'Submitted',
-  recruiter_contact: 'Recruiter in touch',
-  interviewing: 'Interviewing',
-  declined: 'Declined',
-  offer: 'Offer',
-  rejected: 'Not selected',
-  no_response: 'No response',
-  expired: 'Expired — no reply',
-  expired_unsubmitted: 'Expired — never submitted',
-  role_closed: 'Role closed',
-};
-
-/**
- * Whose turn it is, for one member, across everything they owe or are owed.
- *
- * Under DL1 this is load-bearing. D5's hard block on new requests is gone, so
- * this surface plus the nudge engine is the ONLY thing left keeping loops
- * closed — §11's >70% closure target is the number that says whether that was
- * enough. Hence: what you owe sorts to the top, and every row you owe carries
- * exactly one thing to do.
- *
- * `memberId` must be the viewer's own id. The tracker is a first-person view
- * and there is no admin exception (rule 1) — an admin asking for someone
- * else's tracker gets an empty list, not a back door.
- */
-export function trackerFor(memberId: string, now: number): TrackerRow[] {
-  const viewer = viewerOrNull();
-  if (!viewer) return [];
-  if (viewer.id !== memberId) return [];
-  const s = getState();
-  const nameOf = (id: string): string | null => {
-    const m = s.members.find((x) => x.id === id);
-    return m && canSeeMember(viewer, m) ? m.name : null;
-  };
-  // Routed through `postsVisibleTo` rather than reading `s.posts` raw below,
-  // so a post hidden by an open report (or a suspended poster) drops off the
-  // owner's own tracker the same moment it drops off the board — instead of
-  // going on showing a "confirmation due" row for a card nobody else can see.
-  const visiblePostById = new Map(postsVisibleTo(viewer, s).map((p) => [p.id, p]));
-  const rows: TrackerRow[] = [];
-
-  // 1. Requests the member is party to. `visibleRequests` first, so the
-  //    privacy filter is what decides, not the party check.
-  for (const r of visibleRequests(viewer, s.requests)) {
-    const mineAs: 'seeker' | 'referrer' | null =
-      r.seekerId === memberId ? 'seeker' : r.referrerId === memberId ? 'referrer' : null;
-    if (mineAs === null) continue;
-
-    const owner = r.stateOwner ?? OWNER_BY_STATE[r.state];
-    const owed: TrackerRow['owed'] = owner === null ? 'nobody' : owner === mineAs ? 'you' : 'them';
-    const cta =
-      owed === 'you'
-        ? (REQUEST_CTA[r.state as keyof typeof REQUEST_CTA] ?? { label: 'Add an update', action: 'update_request_outcome' })
-        : null;
-
-    rows.push({
-      id: r.id,
-      kind: 'request',
-      title: r.roleTitle,
-      subtitle: `${s.companies.find((c) => c.id === r.companyId)?.name ?? 'Undisclosed'} · ${STATE_LABEL[r.state]}`,
-      counterpartyName: nameOf(mineAs === 'seeker' ? r.referrerId : r.seekerId),
-      state: r.state,
-      owed,
-      dueAt: r.nextUpdateDue,
-      overdueDays: r.nextUpdateDue === null ? 0 : daysBetween(r.nextUpdateDue, now),
-      lastNudgedAt: r.lastNudgedAt,
-      cta,
-    });
-  }
-
-  // 2. Their own applications with a prompt due. §5.1: one prompt, never
-  //    blocking — a job board cannot fairly be gated on answering it.
-  for (const a of s.applications) {
-    if (a.memberId !== memberId) continue;
-    if (!applicationPromptDue(a, now)) continue;
-    const post = visiblePostById.get(a.jobPostId) ?? null;
-    const dueAt = addDays(a.appliedAt, APPLICATION_PROMPT_DAY);
-    rows.push({
-      id: a.id,
-      kind: 'application',
-      title: post?.title ?? 'A role you applied to',
-      subtitle: post ? `${companyLabel(post, s)} · Applied ${daysBetween(a.appliedAt, now)} days ago` : 'Applied',
-      counterpartyName: post ? nameOf(post.posterId) : null,
-      state: a.outcome,
-      owed: 'you',
-      dueAt,
-      overdueDays: daysBetween(dueAt, now),
-      lastNudgedAt: null,
-      cta: { label: 'Did you hear back?', action: 'record_application_outcome' },
-    });
-  }
-
-  // 3. Their own posts needing confirmation (D14: confirm-or-decay).
-  for (const p of visiblePostById.values()) {
-    if (p.posterId !== memberId) continue;
-    if (p.archivedAt !== null) continue;
-    const freshness = freshnessFor(p, now);
-    if (!freshness.promptDue) continue;
-    const dueAt = addDays(p.lastConfirmedAt, CONFIRM_PROMPT_DAYS[0]);
-    rows.push({
-      id: p.id,
-      kind: 'post',
-      title: p.title,
-      subtitle: `${companyLabel(p, s)} · ${freshness.label}`,
-      counterpartyName: null,
-      state: freshness.state,
-      owed: 'you',
-      dueAt,
-      overdueDays: daysBetween(dueAt, now),
-      lastNudgedAt: null,
-      cta: { label: 'Still open?', action: 'confirm_post' },
-    });
-  }
-
-  return rows.sort(
-    (a, b) => (a.owed === 'you' ? 0 : 1) - (b.owed === 'you' ? 0 : 1) || b.overdueDays - a.overdueDays,
-  );
 }

@@ -8,13 +8,14 @@
  * demo data the dev server shows). This asserts that each screen renders at
  * all; it does not assert on markup, except where noted below.
  *
- * Three things beyond "it rendered":
+ * Two things beyond "it rendered" (a third — field scoping on a per-member
+ * read — lost its subject when Task 1 pruned `getMember`/`listMembers` with
+ * the directory; Task 6 rewrites the store's read surface and gets its own
+ * regression test there):
  *
  *   1. The `getState()` guard (and its two neighbours). Grepped statically,
  *      before Vite is even started — see `checkArchitecturalGuard` below.
  *   2. The D2 gate: an unverified viewer's board carries no member data.
- *   3. Field scoping: a member read never exposes another member's
- *      `privacy`, `googleSub`, `caps` or real `email`.
  */
 import { createElement as h } from 'react';
 import { renderToString } from 'react-dom/server';
@@ -146,17 +147,6 @@ function renderScreen(label, mod, name, props) {
 // other caller of the store would: through its public, viewer-scoped reads.
 store.setCurrentMember('m_ananya'); // the seed's default viewer; verified, Tier A.
 
-const posts = store.listPosts(now);
-const namedCompanyPost = posts.find((p) => p.companyId !== null) ?? posts[0];
-const companies = store.listCompanies();
-const companyId = namedCompanyPost?.companyId ?? companies[0]?.id;
-
-const requests = store.listRequests();
-const viewer = store.getCurrentMember();
-const myRequest = requests.find((r) => r.seekerId === viewer.id) ?? requests[0];
-
-const alumniHere = companyId ? store.alumniAt(companyId).find((m) => m.id !== viewer.id) : null;
-
 console.log('\nRendering every screen-level component under src/ui/:\n');
 
 const AppMod = await load('/src/ui/App.tsx');
@@ -165,81 +155,8 @@ renderScreen('App', AppMod, 'App', {});
 const BoardMod = await load('/src/ui/Board.tsx');
 renderScreen('Board', BoardMod, 'Board', { now, onOpenPost: noop });
 
-const TrackerMod = await load('/src/ui/Tracker.tsx');
-renderScreen('Tracker', TrackerMod, 'Tracker', { now, onOpenRequest: noop, onOpenPost: noop });
-
-const DirectoryMod = await load('/src/ui/Directory.tsx');
-renderScreen('Directory', DirectoryMod, 'Directory', { now, onOpenCompany: noop, onRequestReferral: noop });
-
-const CompanyPageMod = await load('/src/ui/CompanyPage.tsx');
-if (companyId) {
-  renderScreen('CompanyPage', CompanyPageMod, 'CompanyPage', {
-    companyId,
-    now,
-    onBack: noop,
-    onRequestReferral: noop,
-  });
-} else {
-  fail('CompanyPage', 'no company found in the seeded store to render against');
-}
-
-const RequestsMod = await load('/src/ui/Requests.tsx');
-renderScreen('Requests', RequestsMod, 'Requests', { now });
-
-const ProfileMod = await load('/src/ui/Profile.tsx');
-renderScreen('Profile', ProfileMod, 'Profile', {});
-
-const PostDetailMod = await load('/src/ui/PostDetail.tsx');
-if (namedCompanyPost) {
-  renderScreen('PostDetail', PostDetailMod, 'PostDetail', {
-    postId: namedCompanyPost.id,
-    now,
-    onClose: noop,
-    onRequestReferral: noop,
-  });
-} else {
-  fail('PostDetail', 'no post found in the seeded store to render against');
-}
-
-const RequestDetailMod = await load('/src/ui/RequestDetail.tsx');
-if (myRequest) {
-  renderScreen('RequestDetail', RequestDetailMod, 'RequestDetail', {
-    requestId: myRequest.id,
-    now,
-    onClose: noop,
-  });
-} else {
-  fail('RequestDetail', 'no request found in the seeded store to render against');
-}
-
-const PostCardMod = await load('/src/ui/PostCard.tsx');
-if (posts[0]) {
-  renderScreen('PostCard', PostCardMod, 'PostCard', { post: posts[0], now, onOpen: noop });
-} else {
-  fail('PostCard', 'no post found in the seeded store to render against');
-}
-
 const PostComposerMod = await load('/src/ui/PostComposer.tsx');
 renderScreen('PostComposer', PostComposerMod, 'PostComposer', { open: true, onClose: noop, onPublished: noop });
-
-const RequestComposerMod = await load('/src/ui/RequestComposer.tsx');
-if (alumniHere) {
-  // Note: `RequestComposer` seeds its form from a `useEffect`, which
-  // `renderToString` never runs (SSR has no effect phase). The component
-  // therefore renders `null` on the very first pass — this still exercises
-  // the module's import graph and its "nothing open" branch without
-  // throwing, which is what this smoke test asserts. It is not a rendering
-  // of the filled-in form; the Task 25 walkthrough covers that in a real
-  // browser instead (see the task report).
-  renderScreen('RequestComposer', RequestComposerMod, 'RequestComposer', {
-    open: true,
-    prefill: { referrerId: alumniHere.id, companyId, roleTitle: 'Smoke test role', jobPostId: null, roleUrl: null },
-    onClose: noop,
-    onSent: noop,
-  });
-} else {
-  fail('RequestComposer', 'no open-to-referring alumnus found at the chosen company');
-}
 
 const ShellMod = await load('/src/ui/Shell.tsx');
 renderScreen('Shell', ShellMod, 'Shell', {
@@ -254,13 +171,8 @@ renderScreen('VerificationGate', VerificationGateMod, 'VerificationGate', {
   children: h('div', null, 'gated content'),
 });
 
-// CapacityControls and Admin both read `getCurrentMember()` directly (their
-// own caps; the admin queue), so they are rendered once as a referrer and
-// once as the admin persona, rather than as the default seeker viewer.
-store.setCurrentMember('m_meera');
-const CapacityControlsMod = await load('/src/ui/CapacityControls.tsx');
-renderScreen('CapacityControls', CapacityControlsMod, 'CapacityControls', {});
-
+// Admin reads `getCurrentMember()` directly (the admin queue), so it is
+// rendered as the admin persona rather than as the default seeker viewer.
 store.setCurrentMember('m_admin');
 const AdminMod = await load('/src/ui/Admin.tsx');
 renderScreen('Admin', AdminMod, 'Admin', { now });
@@ -278,11 +190,17 @@ console.log(
 );
 
 // ---------------------------------------------------------------------------
-// Assertion 2 of 3: D2, "an unverified account can see nothing." Board asked
+// Assertion 2 of 2: D2, "an unverified account can see nothing." Board asked
 // to render for an unverified/pending viewer must carry none of the verified
 // membership by name.
+//
+// Lite has no directory, and Task 1 removed `getMember`/`listMembers` with
+// it, so the field-scoping regression test (Task 24's third assertion here)
+// has no surviving subject to run against — Task 6 rewrites the store's read
+// surface, and whatever replaces per-member field scoping gets its own
+// regression test there.
 // ---------------------------------------------------------------------------
-console.log('\nD2 gate and field-scoping assertions:\n');
+console.log('\nD2 gate assertion:\n');
 
 try {
   const pending = store.listPersonas().find((p) => p.status === 'pending');
@@ -305,34 +223,6 @@ try {
   fail('D2 gate', err.message);
 } finally {
   store.setCurrentMember('m_ananya');
-}
-
-// ---------------------------------------------------------------------------
-// Assertion 3 of 3: field scoping. A member read must never expose another
-// member's `privacy`, `googleSub` or `caps`, and must never expose their real
-// email address either. This was a real defect caught mid-build (Task 24) —
-// this is its regression test, run every time `npm run verify` runs.
-// ---------------------------------------------------------------------------
-try {
-  const karan = store.listMembers().find((m) => m.name === 'Karan Shah');
-  if (!karan) throw new Error('Karan Shah not found in the seeded, viewer-scoped member list');
-
-  const publicKaran = store.getMember(karan.id);
-  if (!publicKaran) throw new Error('getMember(karan.id) returned null for a member the viewer can see');
-
-  const problems = [];
-  if ('privacy' in publicKaran) problems.push('privacy is present (should be stripped entirely)');
-  if ('googleSub' in publicKaran) problems.push('googleSub is present (should be stripped entirely)');
-  if ('caps' in publicKaran) problems.push('caps is present (should be stripped entirely)');
-  if (publicKaran.email !== null) problems.push(`email is "${publicKaran.email}" (should be null for a non-self read)`);
-
-  if (problems.length) {
-    fail('field scoping', `getMember(karan.id) as a non-blocked other member: ${problems.join('; ')}`);
-  } else {
-    ok('field scoping', "getMember(karan.id) hides privacy/googleSub/caps and nulls email for a non-self viewer");
-  }
-} catch (err) {
-  fail('field scoping', err.message);
 }
 
 await vite.close();

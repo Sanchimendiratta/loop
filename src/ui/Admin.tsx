@@ -2,13 +2,11 @@ import { useState } from 'react';
 import {
   decideVerification,
   dismissReport,
-  getMember,
   getPost,
   listCases,
   listReports,
   RuleViolation,
   upholdReport,
-  whatsappDigest,
 } from '../data/store.ts';
 import type { Report, VerificationCase } from '../data/schema.ts';
 import { Button, Card, Chip, EmptyState, Field, Tabs, Textarea } from './primitives.tsx';
@@ -90,8 +88,13 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
-function nameFor(memberId: string, fallback: string): string {
-  return getMember(memberId)?.name ?? fallback;
+// `getMember` is gone with the directory it served (Task 1) — there is no
+// member-lookup-by-id left in the store, so every name below falls back to
+// what the case's own evidence or a generic label already carries. Task 12
+// reshapes this screen to Lite's queue, which does not need a name lookup
+// at all: the table reads straight off each case's evidence.
+function nameFor(_memberId: string, fallback: string): string {
+  return fallback;
 }
 
 /**
@@ -350,38 +353,18 @@ function Reports() {
   );
 }
 
-function Digest({ now }: { now: number }) {
-  const text = whatsappDigest(now);
-  return (
-    <section className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold text-stone-900">The WhatsApp digest</h2>
-      {/* D17: nothing here sends anything — automated posting into a WhatsApp
-          group would breach its terms, the same reasoning as §7.4's
-          no-scraping stance. The button copies; a human pastes it in. */}
-      <p className="text-xs text-stone-500">Paste this into the batch group.</p>
-      <Card className="p-3">
-        <pre className="whitespace-pre-wrap break-words text-sm text-stone-800">{text}</pre>
-      </Card>
-      <div>
-        <CopyButton text={text} label="Copy digest" />
-      </div>
-    </section>
-  );
-}
-
 const TABS = [
   { id: 'verification', label: 'Verification queue' },
   { id: 'reports', label: 'Reports' },
-  { id: 'digest', label: 'WhatsApp digest' },
 ];
 
 /**
- * The admin console: the §6 verification queue, §8 reports/takedown, and the
- * D17 WhatsApp digest. Every read here is admin-gated at the store (`listCases`,
- * `listReports`) or is the viewer's own — nothing is filtered again in this
- * file, and it goes through the store's public read/write functions only,
- * never the browser's persistence layer, the privacy module, or the store's
- * test-only whole-state escape hatch.
+ * The admin console: the §6 verification queue and §8 reports/takedown. Lite
+ * drops the WhatsApp digest (Task 1). Every read here is admin-gated at the
+ * store (`listCases`, `listReports`) or is the viewer's own — nothing is
+ * filtered again in this file, and it goes through the store's public
+ * read/write functions only, never the browser's persistence layer, the
+ * privacy module, or the store's test-only whole-state escape hatch.
  */
 export function Admin({ now }: AdminProps) {
   const [tab, setTab] = useState('verification');
@@ -390,7 +373,6 @@ export function Admin({ now }: AdminProps) {
       <Tabs items={TABS} active={tab} onChange={setTab} />
       {tab === 'verification' ? <VerificationQueue now={now} /> : null}
       {tab === 'reports' ? <Reports /> : null}
-      {tab === 'digest' ? <Digest now={now} /> : null}
     </div>
   );
 }

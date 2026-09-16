@@ -1,47 +1,24 @@
 import { useState } from 'react';
-import { getCurrentMember, listCases, listPersonas, setCurrentMember, trackerFor } from '../data/store.ts';
+import { getCurrentMember, listCases, listPersonas, setCurrentMember } from '../data/store.ts';
 import { Avatar, Select } from './primitives.tsx';
 import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
-import { PostDetail } from './PostDetail.tsx';
-import { Directory } from './Directory.tsx';
-import { CompanyPage } from './CompanyPage.tsx';
-import { Profile } from './Profile.tsx';
-import { RequestComposer } from './RequestComposer.tsx';
-import type { ReferralAsk } from './RequestComposer.tsx';
-import { RequestDetail } from './RequestDetail.tsx';
-import { Requests } from './Requests.tsx';
 import { Shell } from './Shell.tsx';
-import { Tracker } from './Tracker.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
 import { useNow, useStoreVersion } from './useStore.ts';
 
-type View = 'board' | 'tracker' | 'directory' | 'requests' | 'profile' | 'admin';
+// Lite's nav is reshaped in Task 7 (Board · My applications · My posts ·
+// Admin); until then this is deliberately down to the two screens that
+// survived Task 1's prune.
+type View = 'board' | 'admin';
 
 export function App() {
   useStoreVersion();
   const now = useNow();
   const [view, setView] = useState<View>('board');
-  const [openPostId, setOpenPostId] = useState<string | null>(null);
-  const [openRequestId, setOpenRequestId] = useState<string | null>(null);
-  const [openCompanyId, setOpenCompanyId] = useState<string | null>(null);
-  const [composerOpen, setComposerOpen] = useState(false);
-  const [composerAsk, setComposerAsk] = useState<ReferralAsk | null>(null);
 
-  // The one hand-off every "ask for a referral" entry point shares —
-  // `Directory.tsx`, `CompanyPage.tsx` and `PostDetail.tsx`'s bridge all raise
-  // the same `ReferralAsk` shape now, so there is exactly one handler here
-  // rather than one per shape.
-  function handleRequestReferral(req: ReferralAsk): void {
-    setComposerAsk(req);
-    setComposerOpen(true);
-  }
-
-  // Leaving the directory tab drops any company drill-down, so coming back
-  // to it later starts from the roster rather than wherever it was left.
   function handleNavigate(id: string): void {
-    if (id !== 'directory') setOpenCompanyId(null);
     setView(id as View);
   }
 
@@ -55,19 +32,11 @@ export function App() {
   // out along with the rest.
   const personas = listPersonas().filter((p) => !p.id.startsWith('m_fill_') || p.status !== 'verified');
 
-  // Badge counts are store reads, gated the same way the gate itself is: an
-  // unverified viewer's own `trackerFor`/`listCases` calls already answer
-  // empty, but computing them at all here would be a habit worth not forming.
-  const owedCount = isVerified && member ? trackerFor(member.id, now).filter((r) => r.owed === 'you').length : 0;
   const pendingCases = isVerified && member?.isAdmin ? listCases().filter((c) => c.decision === 'pending').length : 0;
 
   const nav: NavItem[] = isVerified
     ? [
         { id: 'board', label: 'Board' },
-        { id: 'tracker', label: 'Tracker', badge: owedCount },
-        { id: 'directory', label: 'Directory' },
-        { id: 'requests', label: 'Requests' },
-        { id: 'profile', label: 'Profile' },
         ...(member?.isAdmin ? [{ id: 'admin', label: 'Admin', badge: pendingCases }] : []),
       ]
     : [];
@@ -108,48 +77,14 @@ export function App() {
       <div className="min-h-0 flex-1">
         <VerificationGate>
           <Shell nav={nav} active={view} onNavigate={handleNavigate}>
-            {view === 'board' ? <Board now={now} onOpenPost={setOpenPostId} /> : null}
-            {view === 'tracker' ? (
-              <Tracker now={now} onOpenRequest={setOpenRequestId} onOpenPost={setOpenPostId} />
-            ) : null}
-            {view === 'directory' ? (
-              openCompanyId ? (
-                <CompanyPage
-                  companyId={openCompanyId}
-                  now={now}
-                  onBack={() => setOpenCompanyId(null)}
-                  onRequestReferral={handleRequestReferral}
-                />
-              ) : (
-                <Directory now={now} onOpenCompany={setOpenCompanyId} onRequestReferral={handleRequestReferral} />
-              )
-            ) : null}
-            {view === 'requests' ? <Requests now={now} /> : null}
-            {view === 'profile' ? <Profile /> : null}
+            {/* No detail screen — Task 8 rewrites the board to expand a row
+                in place instead, so there is nothing yet for a post id to
+                open into. */}
+            {view === 'board' ? <Board now={now} onOpenPost={() => {}} /> : null}
             {view === 'admin' ? <Admin now={now} /> : null}
           </Shell>
         </VerificationGate>
       </div>
-
-      {openPostId ? (
-        <PostDetail
-          postId={openPostId}
-          now={now}
-          onClose={() => setOpenPostId(null)}
-          onRequestReferral={handleRequestReferral}
-        />
-      ) : null}
-
-      {openRequestId ? (
-        <RequestDetail requestId={openRequestId} now={now} onClose={() => setOpenRequestId(null)} />
-      ) : null}
-
-      <RequestComposer
-        open={composerOpen}
-        prefill={composerAsk}
-        onClose={() => setComposerOpen(false)}
-        onSent={() => setComposerOpen(false)}
-      />
     </div>
   );
 }

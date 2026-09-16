@@ -16,16 +16,12 @@
 import { SCHEMA_VERSION } from './schema.ts';
 import type {
   Company,
-  DeclineReason,
   JobPost,
   Member,
   MemberStatus,
   PostApplication,
   PostShare,
   PrivacySettings,
-  ReferralRequest,
-  RequestEvent,
-  RequestState,
   Report,
   ResumeVersion,
   School,
@@ -34,9 +30,7 @@ import type {
   Vouch,
 } from './schema.ts';
 import { inferDestination, parsePost } from '../core/parse.ts';
-import { dedupeHash } from '../core/dedupe.ts';
-import { addDays, DAY_MS } from '../core/time.ts';
-import { applyTransition, RESPONSE_WINDOW_DAYS } from '../core/requests.ts';
+import { DAY_MS } from '../core/time.ts';
 import {
   MSG_1_CONFIDENTIAL_STARTUP,
   MSG_2_PHONE_ROUTE,
@@ -44,6 +38,62 @@ import {
   MSG_4_NAMED_COMPANY,
   MSG_5_CAREERS_EMAIL,
 } from './messages.ts';
+
+/**
+ * Duplicate-post hashing, relocated from `core/dedupe.ts` (deleted along with
+ * the referral-request object it also served). `src/data/store.ts` keeps its
+ * own copy for the same reason — this one exists so the seeded fixtures below
+ * carry a `dedupeHash` computed the same way `publishPost` computes one, or a
+ * forward matching an existing seed post would fail to merge into it.
+ */
+const TRACKING_PARAMS = [
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+  'fbclid', 'gclid', 'ref', 'source', 'src',
+];
+
+const TITLE_SYNONYMS: [RegExp, string][] = [
+  [/\bsr\.?\b/gi, 'senior'],
+  [/\bjr\.?\b/gi, 'junior'],
+  [/\bmgr\.?\b/gi, 'manager'],
+  [/\bassoc\.?\b/gi, 'associate'],
+  [/\bvp\b/gi, 'vice president'],
+];
+
+function normaliseRoute(v: string): string {
+  const raw = String(v ?? '').trim();
+  if (!raw) return '';
+  if (raw.includes('@') && !raw.startsWith('http')) return raw.toLowerCase();
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const host = u.host.toLowerCase().replace(/^www\./, '');
+      const path = u.pathname.replace(/\/+$/, '');
+      for (const t of TRACKING_PARAMS) u.searchParams.delete(t);
+      u.searchParams.sort();
+      const query = u.searchParams.toString();
+      return `${host}${path}${query ? `?${query}` : ''}`;
+    } catch {
+      return raw.toLowerCase();
+    }
+  }
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length >= 10) {
+    if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+    if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
+    return digits;
+  }
+  return raw.toLowerCase();
+}
+
+function normaliseTitle(t: string): string {
+  let out = String(t ?? '').toLowerCase();
+  for (const [re, to] of TITLE_SYNONYMS) out = out.replace(re, to);
+  return out.replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function dedupeHash(applyValue: string, title: string): string {
+  return `${normaliseRoute(applyValue)}::${normaliseTitle(title)}`;
+}
 
 export interface AppState {
   version: number;
@@ -53,8 +103,6 @@ export interface AppState {
   posts: JobPost[];
   shares: PostShare[];
   applications: PostApplication[];
-  requests: ReferralRequest[];
-  requestEvents: RequestEvent[];
   cases: VerificationCase[];
   resumes: ResumeVersion[];
   vouches: Vouch[];
@@ -291,82 +339,6 @@ function buildFixturePost(input: FixturePostInput): JobPost {
     unreachableFlags: [],
     reportedBy: [],
   };
-}
-
-// ---------------------------------------------------------------------------
-// Requests — built through the real state machine (core/requests.ts) so the
-// seeded data can never disagree with the rules the store enforces at runtime.
-// ---------------------------------------------------------------------------
-
-interface RequestBase {
-  id: string;
-  seekerId: string;
-  referrerId: string;
-  companyId: string;
-  jobPostId: string | null;
-  roleUrl: string | null;
-  roleTitle: string;
-  resumeVersionId: string | null;
-  pitch: string;
-  createdAt: number;
-}
-
-interface RequestStep {
-  to: RequestState;
-  role: 'seeker' | 'referrer' | 'system';
-  at: number;
-  note: string;
-  declineReason?: DeclineReason;
-}
-
-function buildRequestTimeline(base: RequestBase, steps: RequestStep[]): { request: ReferralRequest; events: RequestEvent[] } {
-  let request: ReferralRequest = {
-    id: base.id,
-    seekerId: base.seekerId,
-    referrerId: base.referrerId,
-    companyId: base.companyId,
-    jobPostId: base.jobPostId,
-    roleUrl: base.roleUrl,
-    roleTitle: base.roleTitle,
-    resumeVersionId: base.resumeVersionId,
-    pitch: base.pitch,
-    state: 'sent',
-    stateOwner: 'referrer',
-    declineReason: null,
-    nextUpdateDue: addDays(base.createdAt, RESPONSE_WINDOW_DAYS),
-    nudgeCount: 0,
-    lastNudgedAt: null,
-    createdAt: base.createdAt,
-    updatedAt: base.createdAt,
-  };
-
-  const events: RequestEvent[] = [
-    {
-      id: `${base.id}_ev0`,
-      requestId: base.id,
-      actorId: base.seekerId,
-      fromState: null,
-      toState: 'sent',
-      note: 'Request sent.',
-      at: base.createdAt,
-    },
-  ];
-
-  steps.forEach((step, idx) => {
-    const from = request.state;
-    request = applyTransition(request, step.to, step.role, step.at, { declineReason: step.declineReason });
-    events.push({
-      id: `${base.id}_ev${idx + 1}`,
-      requestId: base.id,
-      actorId: step.role === 'system' ? null : step.role === 'referrer' ? base.referrerId : base.seekerId,
-      fromState: from,
-      toState: step.to,
-      note: step.note,
-      at: step.at,
-    });
-  });
-
-  return { request, events };
 }
 
 // ---------------------------------------------------------------------------
@@ -703,213 +675,6 @@ export function buildSeed(now: number): AppState {
     { id: 'app_11', jobPostId: pAnveshan.id, memberId: ananya.id, appliedAt: now - 16 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: null },
   ];
 
-  // -- Referral requests (§5.2 / §7.1), run through the real state machine --
-
-  const reqA = buildRequestTimeline(
-    {
-      id: 'req_a_sent_overdue',
-      seekerId: ananya.id,
-      referrerId: rohit.id,
-      companyId: 'c_impactco',
-      jobPostId: pImpactco.id,
-      roleUrl: null,
-      roleTitle: pImpactco.title,
-      resumeVersionId: 'res_ananya_v1',
-      pitch: "I'd love an introduction — the People & Culture mandate lines up with my HR coursework.",
-      createdAt: now - 10 * DAY_MS,
-    },
-    [],
-  );
-
-  const reqB = buildRequestTimeline(
-    {
-      id: 'req_b_accepted_overdue',
-      seekerId: ananya.id,
-      referrerId: meera.id,
-      companyId: 'c_foodhak',
-      jobPostId: pFoodhak.id,
-      roleUrl: null,
-      roleTitle: pFoodhak.title,
-      resumeVersionId: 'res_ananya_v1',
-      pitch: 'Would love to be considered for the Brand Marketing Manager opening.',
-      createdAt: now - 20 * DAY_MS,
-    },
-    [{ to: 'accepted', role: 'referrer', at: now - 18 * DAY_MS, note: 'Meera agreed to refer.' }],
-  );
-
-  const reqC = buildRequestTimeline(
-    {
-      id: 'req_c_accepted_healthy',
-      seekerId: 'm_fill_100',
-      referrerId: 'm_fill_5',
-      companyId: 'c_itc',
-      jobPostId: null,
-      roleUrl: 'https://itc.in/careers/12345',
-      roleTitle: 'Category Manager',
-      resumeVersionId: null,
-      pitch: 'Referral request via the alumni network.',
-      createdAt: now - 5 * DAY_MS,
-    },
-    [{ to: 'accepted', role: 'referrer', at: now - 4 * DAY_MS, note: 'Referrer accepted.' }],
-  );
-
-  const reqD = buildRequestTimeline(
-    {
-      id: 'req_d_submitted_overdue',
-      seekerId: ananya.id,
-      referrerId: 'm_fill_8',
-      companyId: 'c_amazon',
-      jobPostId: null,
-      roleUrl: 'https://amazon.jobs/en/jobs/998877',
-      roleTitle: 'Senior Product Manager',
-      resumeVersionId: 'res_ananya_v1',
-      pitch: 'Referral for the Senior PM opening in Bangalore.',
-      createdAt: now - 30 * DAY_MS,
-    },
-    [
-      { to: 'accepted', role: 'referrer', at: now - 28 * DAY_MS, note: 'Accepted — will submit shortly.' },
-      { to: 'submitted', role: 'referrer', at: now - 27 * DAY_MS, note: 'Submitted to the hiring team.' },
-    ],
-  );
-
-  const reqE = buildRequestTimeline(
-    {
-      id: 'req_e_submitted_healthy',
-      seekerId: 'm_fill_101',
-      referrerId: 'm_fill_18',
-      companyId: 'c_icicibank',
-      jobPostId: null,
-      roleUrl: 'https://icicibank.com/careers/456',
-      roleTitle: 'Relationship Manager',
-      resumeVersionId: null,
-      pitch: 'Referral request for the RM role.',
-      createdAt: now - 6 * DAY_MS,
-    },
-    [
-      { to: 'accepted', role: 'referrer', at: now - 5 * DAY_MS, note: 'Accepted.' },
-      { to: 'submitted', role: 'referrer', at: now - 4 * DAY_MS, note: 'Submitted.' },
-    ],
-  );
-
-  const reqF = buildRequestTimeline(
-    {
-      id: 'req_f_declined',
-      seekerId: ananya.id,
-      referrerId: 'm_fill_12',
-      companyId: 'c_paytm',
-      jobPostId: null,
-      roleUrl: 'https://paytm.com/careers/321',
-      roleTitle: 'Business Analyst',
-      resumeVersionId: 'res_ananya_v1',
-      pitch: 'Requesting a referral for the Business Analyst role.',
-      createdAt: now - 15 * DAY_MS,
-    },
-    [{ to: 'declined', role: 'referrer', at: now - 14 * DAY_MS, note: 'No capacity this month.', declineReason: 'no_capacity' }],
-  );
-
-  const reqG = buildRequestTimeline(
-    {
-      id: 'req_g_offer',
-      seekerId: 'm_fill_102',
-      referrerId: 'm_fill_15',
-      companyId: 'c_adityabirla',
-      jobPostId: null,
-      roleUrl: 'https://adityabirla.com/careers/789',
-      roleTitle: 'Manager - Strategy',
-      resumeVersionId: null,
-      pitch: 'Referral for the Strategy Manager opening.',
-      createdAt: now - 45 * DAY_MS,
-    },
-    [
-      { to: 'accepted', role: 'referrer', at: now - 43 * DAY_MS, note: 'Accepted.' },
-      { to: 'submitted', role: 'referrer', at: now - 42 * DAY_MS, note: 'Submitted.' },
-      { to: 'interviewing', role: 'seeker', at: now - 30 * DAY_MS, note: 'Moved to interviews.' },
-      { to: 'offer', role: 'seeker', at: now - 5 * DAY_MS, note: 'Offer extended!' },
-    ],
-  );
-
-  const reqH = buildRequestTimeline(
-    {
-      id: 'req_h_interviewing',
-      seekerId: 'm_fill_103',
-      referrerId: 'm_fill_19',
-      companyId: 'c_axisbank',
-      jobPostId: null,
-      roleUrl: 'https://axisbank.com/careers/654',
-      roleTitle: 'Analytics Lead',
-      resumeVersionId: null,
-      pitch: 'Referral request for the Analytics Lead role.',
-      createdAt: now - 25 * DAY_MS,
-    },
-    [
-      { to: 'accepted', role: 'referrer', at: now - 23 * DAY_MS, note: 'Accepted.' },
-      { to: 'submitted', role: 'referrer', at: now - 22 * DAY_MS, note: 'Submitted.' },
-      { to: 'interviewing', role: 'seeker', at: now - 10 * DAY_MS, note: 'First round scheduled.' },
-    ],
-  );
-
-  // §5.2 gives sent/accepted the SAME instant for "past due" and "auto-expired"
-  // (seven days, fourteen days) — so a referrer-owed row that is both overdue
-  // and still open after `runClock` is unreachable, and reqA/reqB above land on
-  // `expired`/`expired_unsubmitted` once the clock runs (as intended: they are
-  // the "what happens if nobody replies" examples). The three requests below
-  // are what keep the tracker non-empty, with real owed-by-you rows, for the
-  // referrer personas and for Karan, once the demo opens post-clock.
-
-  const reqI = buildRequestTimeline(
-    {
-      id: 'req_i_rohit_owes',
-      seekerId: 'm_fill_110',
-      referrerId: rohit.id,
-      companyId: 'c_impactco',
-      jobPostId: pImpactco.id,
-      roleUrl: null,
-      roleTitle: pImpactco.title,
-      resumeVersionId: null,
-      pitch: "I'd love an introduction to the People & Culture opening.",
-      createdAt: now - 3 * DAY_MS,
-    },
-    [],
-  );
-
-  const reqJ = buildRequestTimeline(
-    {
-      id: 'req_j_meera_owes',
-      seekerId: 'm_fill_112',
-      referrerId: meera.id,
-      companyId: 'c_foodhak',
-      jobPostId: pFoodhak.id,
-      roleUrl: null,
-      roleTitle: pFoodhak.title,
-      resumeVersionId: null,
-      pitch: 'Would love a referral for the Brand Marketing Manager role.',
-      createdAt: now - 9 * DAY_MS,
-    },
-    [{ to: 'accepted', role: 'referrer', at: now - 7 * DAY_MS, note: 'Meera agreed to refer.' }],
-  );
-
-  const reqK = buildRequestTimeline(
-    {
-      id: 'req_k_karan_live',
-      seekerId: karan.id,
-      referrerId: 'm_fill_9',
-      companyId: 'c_flipkart',
-      jobPostId: null,
-      roleUrl: 'https://flipkart.com/careers/234',
-      roleTitle: 'Strategy Manager',
-      resumeVersionId: null,
-      // Karan is looking quietly, away from his own employer (§6/D6) — this
-      // request is with an alum elsewhere, not at McKinsey.
-      pitch: 'Referral request for the Strategy Manager opening.',
-      createdAt: now - 2 * DAY_MS,
-    },
-    [],
-  );
-
-  const timelines = [reqA, reqB, reqC, reqD, reqE, reqF, reqG, reqH, reqI, reqJ, reqK];
-  const requests: ReferralRequest[] = timelines.map((t) => t.request);
-  const requestEvents: RequestEvent[] = timelines.flatMap((t) => t.events);
-
   // -- Resumes ----------------------------------------------------------------
 
   const resumes: ResumeVersion[] = [
@@ -931,8 +696,6 @@ export function buildSeed(now: number): AppState {
     posts,
     shares,
     applications,
-    requests,
-    requestEvents,
     cases,
     resumes,
     vouches,

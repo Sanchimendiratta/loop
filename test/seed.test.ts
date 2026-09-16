@@ -51,16 +51,6 @@ describe('the demo network', () => {
     expect(s.posts.some((p) => NOW - p.lastConfirmedAt > 30 * 86_400_000)).toBe(true);
   });
 
-  test('requests span every non-terminal state so the tracker has rows on both sides', () => {
-    const states = new Set(s.requests.map((r) => r.state));
-    for (const st of ['sent', 'accepted', 'submitted']) expect(states.has(st as never), `${st} missing`).toBe(true);
-  });
-
-  test('an overdue request exists for each side', () => {
-    expect(s.requests.some((r) => r.stateOwner === 'referrer' && (r.nextUpdateDue ?? Infinity) < NOW)).toBe(true);
-    expect(s.requests.some((r) => r.stateOwner === 'seeker' && (r.nextUpdateDue ?? Infinity) < NOW)).toBe(true);
-  });
-
   test('the seed is deterministic for a fixed now', () => {
     expect(JSON.stringify(buildSeed(NOW))).toBe(JSON.stringify(buildSeed(NOW)));
   });

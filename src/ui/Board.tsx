@@ -5,7 +5,6 @@ import { relationshipBadge } from '../core/disclosure.ts';
 import { freshnessFor } from '../core/freshness.ts';
 import type { FreshnessState } from '../core/freshness.ts';
 import { Button, EmptyState, Field, Select, Tabs } from './primitives.tsx';
-import { PostCard } from './PostCard.tsx';
 import { PostComposer } from './PostComposer.tsx';
 
 export interface BoardProps {
@@ -182,9 +181,20 @@ export function Board({ now, onOpenPost }: BoardProps) {
       {filtered.length === 0 ? (
         <EmptyState title="No posts match those filters." />
       ) : (
+        // Placeholder card — Task 8 rewrites the board as a table. This
+        // exists only so the tree keeps building now that `PostCard.tsx`
+        // (which needed several deleted store reads) is gone.
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((post) => (
-            <PostCard key={post.id} post={post} now={now} onOpen={onOpenPost} />
+            <button
+              key={post.id}
+              type="button"
+              onClick={() => onOpenPost(post.id)}
+              className="flex flex-col gap-1 rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-stone-900/5"
+            >
+              <h3 className="text-base font-semibold text-stone-900">{post.title}</h3>
+              <p className="text-sm text-stone-600">{post.locations.join(', ') || 'Location not specified'}</p>
+            </button>
           ))}
         </div>
       )}
