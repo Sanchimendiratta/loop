@@ -15,7 +15,9 @@
  *
  *   1. The `getState()` guard (and its two neighbours). Grepped statically,
  *      before Vite is even started — see `checkArchitecturalGuard` below.
- *   2. The D2 gate: an unverified viewer's board carries no member data.
+ *   2. The D2 gate: a pending viewer's `App` render carries no post, company,
+ *      apply-route or applicant data — calibrated first against a verified
+ *      viewer, so the detector is proven able to fail.
  */
 import { createElement as h } from 'react';
 import { renderToString } from 'react-dom/server';
@@ -192,33 +194,86 @@ console.log(
 );
 
 // ---------------------------------------------------------------------------
-// Assertion 2 of 2: D2, "an unverified account can see nothing." Board asked
-// to render for an unverified/pending viewer must carry none of the verified
-// membership by name.
+// Assertion 2 of 2: D2, "an unverified account can see nothing."
 //
-// Lite has no directory, and `getMember`/`listMembers` went with it, so the
-// old field-scoping assertion here has no subject left. Its replacement is
-// rule 2 — applicant details reach only the poster — which `test/store.test.ts`
-// pins directly against the store rather than through a rendered screen.
+// Pointed at `App`, not `Board`. Board was the wrong subject: it renders member
+// and post data only from `listPosts`, which returns [] for a gated viewer, so
+// a grep over its markup could never fail and reported coverage it did not
+// have. `App` is the real composition — persona switcher, nav, badge counts and
+// whatever the gate lets through — so it is where a leak would actually show.
+//
+// One ungated surface is excluded on purpose: the persona `<select>`. It stands
+// in for Google's account chooser and sits ABOVE the gate, so a blocked member
+// is not stranded with no way back to a verified account; `listPersonas` is
+// deliberately narrow (a name and a gate state, nothing else). Everything
+// outside that element must be empty of network data.
+//
+// The check begins with a positive control: the same detector run against a
+// VERIFIED viewer must find post data. Without it, a detector broken by an
+// escaping change or a markup change would pass silently — which is the exact
+// failure this assertion replaces.
 // ---------------------------------------------------------------------------
 console.log('\nD2 gate assertion:\n');
 
-try {
-  const pending = store.listPersonas().find((p) => p.status === 'pending');
-  if (!pending) throw new Error('no pending persona in the seeded store to test the gate against');
-  store.setCurrentMember(pending.id);
+/** React escapes text children; a raw-string grep would miss "People & Culture". */
+const escapeHtml = (v) =>
+  v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 
-  const html = render(BoardMod.Board, { now, onOpenPost: noop });
-  const verifiedNames = store
-    .listPersonas()
-    .filter((p) => p.status === 'verified')
-    .slice(0, 40)
-    .map((p) => p.name);
-  const leaked = verifiedNames.filter((n) => html.includes(n));
-  if (leaked.length) {
-    fail('D2 gate', `unverified viewer's Board render contains: ${leaked.join(', ')}`);
+const containsValue = (html, v) => html.includes(v) || html.includes(escapeHtml(v));
+
+/**
+ * The markup with the persona switcher cut out. Throws rather than returning
+ * the whole document if the switcher is missing, so a markup change cannot
+ * turn this into a weaker assertion without anyone noticing.
+ */
+function outsideThePersonaSwitcher(html) {
+  const start = html.indexOf('<select');
+  const end = html.indexOf('</select>');
+  if (start === -1 || end === -1) {
+    throw new Error('App rendered no persona <select>; the ungated-surface exclusion would be silently wrong');
+  }
+  return html.slice(0, start) + html.slice(end + '</select>'.length);
+}
+
+try {
+  // Read unscoped, through the test-only escape hatch, so the assertion knows
+  // exactly what a leak would look like.
+  const st = store.getState();
+  const secrets = [];
+  for (const p of st.posts) {
+    secrets.push(['post title', p.title]);
+    if (p.companyName) secrets.push(['company name', p.companyName]);
+    if (p.confidentialDescriptor) secrets.push(['confidential descriptor', p.confidentialDescriptor]);
+    if (p.applyValue) secrets.push(['apply route', p.applyValue]);
+  }
+  for (const a of st.applications) {
+    const m = st.members.find((x) => x.id === a.memberId);
+    if (m) secrets.push(['applicant name', m.name]);
+  }
+
+  // Positive control.
+  const verified = store.listPersonas().find((p) => p.status === 'verified');
+  if (!verified) throw new Error('no verified persona in the seeded store to calibrate the detector against');
+  store.setCurrentMember(verified.id);
+  const visible = outsideThePersonaSwitcher(render(AppMod.App, {}));
+  const found = secrets.filter(([, v]) => containsValue(visible, v));
+  if (!found.length) {
+    fail('D2 gate', 'the detector found no post data even for a VERIFIED viewer — it cannot fail, so it proves nothing');
   } else {
-    ok('D2 gate', `unverified viewer (${pending.id}) sees no member data on the board`);
+    ok('D2 detector', `${found.length} data point(s) visible to a verified viewer — the grep works`);
+
+    // The assertion itself.
+    const pending = store.listPersonas().find((p) => p.status === 'pending');
+    if (!pending) throw new Error('no pending persona in the seeded store to test the gate against');
+    store.setCurrentMember(pending.id);
+
+    const gated = outsideThePersonaSwitcher(render(AppMod.App, {}));
+    const leaked = secrets.filter(([, v]) => containsValue(gated, v));
+    if (leaked.length) {
+      fail('D2 gate', `pending viewer's App render leaks ${leaked.map(([k, v]) => `${k} "${v}"`).join(', ')}`);
+    } else {
+      ok('D2 gate', `pending viewer (${pending.id}) sees none of ${secrets.length} network data points`);
+    }
   }
 } catch (err) {
   fail('D2 gate', err.message);

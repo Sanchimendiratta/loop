@@ -2,6 +2,11 @@ import { describe, expect, test } from 'vitest';
 import { buildSeed } from '../src/data/seed.ts';
 import { isStale } from '../src/core/applications.ts';
 import { DAY_MS } from '../src/core/time.ts';
+import { PROGRAMMES } from '../src/data/schema.ts';
+import {
+  MSG_1_CONFIDENTIAL_STARTUP, MSG_2_PHONE_ROUTE, MSG_3_SEARCH_FIRM,
+  MSG_4_NAMED_COMPANY, MSG_5_CAREERS_EMAIL,
+} from '../src/data/messages.ts';
 
 const NOW = Date.UTC(2026, 8, 17);
 
@@ -12,9 +17,17 @@ describe('the Lite demo workspace', () => {
     expect(JSON.stringify(buildSeed(NOW))).toBe(JSON.stringify(buildSeed(NOW)));
   });
 
-  test('the five real messages are seeded as posts', () => {
+  test('the five real messages are seeded as posts, byte for byte', () => {
     expect(s.posts.length).toBeGreaterThanOrEqual(5);
-    for (const p of s.posts.slice(0, 5)) expect(p.rawPaste?.length ?? 0).toBeGreaterThan(20);
+    // Byte-equality, not a length floor: the point of seeding from the real
+    // corpus is that the demo runs the parser over exactly what the group
+    // sends. A paraphrased paste would pass `length > 20` and quietly stop
+    // exercising the input this parser exists for.
+    const corpus = [
+      MSG_1_CONFIDENTIAL_STARTUP, MSG_2_PHONE_ROUTE, MSG_3_SEARCH_FIRM,
+      MSG_4_NAMED_COMPANY, MSG_5_CAREERS_EMAIL,
+    ];
+    expect(s.posts.slice(0, 5).map((p) => p.rawPaste)).toEqual(corpus);
   });
 
   test('all four connection values appear, so the board demonstrates ranking', () => {
@@ -73,8 +86,23 @@ describe('the Lite demo workspace', () => {
     expect(Math.max(...counts.values())).toBeGreaterThanOrEqual(3);
   });
 
-  test('a pending verification case is waiting for the admin', () => {
-    expect(s.members.some((m) => m.status === 'pending' && m.linkedinUrl.length > 0)).toBe(true);
+  test('a pending verification case is waiting for the admin, with evidence', () => {
+    const pending = s.members.filter((m) => m.status === 'pending');
+    expect(pending.length).toBeGreaterThanOrEqual(1);
+    for (const m of pending) {
+      // The four things §3 says an admin decides against. `linkedinUrl` is a
+      // non-optional string, so `length > 0` alone was the only one of these
+      // that could have failed — and an empty queue row is exactly what makes
+      // the admin screen undemonstrable.
+      expect(m.linkedinUrl, m.id).toMatch(/^https?:\/\//);
+      expect(m.batch, m.id).toBeGreaterThan(1900);
+      expect(PROGRAMMES, m.id).toContain(m.programme);
+      expect(m.name.trim().length, m.id).toBeGreaterThan(0);
+      // Undecided: no reviewer, no timestamp, no note.
+      expect(m.decidedAt, m.id).toBeNull();
+      expect(m.decidedById, m.id).toBeNull();
+      expect(m.verifiedBy, m.id).toBeNull();
+    }
   });
 
   test('unread notifications exist so the bell shows a count', () => {

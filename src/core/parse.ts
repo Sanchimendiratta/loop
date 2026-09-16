@@ -10,24 +10,16 @@
  * guessed** — a wrong value a hurried poster accepts is worse than a blank one.
  * That is why every field carries a confidence and why `parseField` nulls the
  * value below the threshold rather than leaving the caller to remember.
+ *
+ * What it does NOT do any more is classify where the CV lands. v1.3's
+ * `inferDestination` guessed "external recruiter" vs "company ATS" from a
+ * domain, which was always a slur risk on a genuine hiring manager's own post;
+ * Lite drops that taxonomy from the schema outright (§7), so the guess has no
+ * field to land in and no consumer. The parser fills exactly what Lite's
+ * composer pre-fills: title, company, location, experience, compensation,
+ * apply method, apply value, JD link.
  */
 import type { ApplyMethod } from '../data/schema.ts';
-
-/**
- * Where the CV lands, as the parser reads it.
- *
- * Lite dropped `destination_type` from the schema (§7): a post stores the rung
- * alone, and `core/disclosure.ts` writes its line from that. The classification
- * survives HERE, as a parser-local type, because it is still the signal that
- * tells the composer which apply route it is looking at — but nothing persists
- * it, which is exactly why it is no longer a schema type.
- */
-export type DestinationType =
-  | 'company_ats'
-  | 'named_person'
-  | 'external_recruiter'
-  | 'third_party_platform'
-  | 'via_poster';
 
 export const MIN_CONFIDENCE = 0.5;
 
@@ -47,7 +39,6 @@ export interface ParsedPost {
   applyMethod: ParsedField<ApplyMethod>;
   applyValue: ParsedField<string>;
   jdUrl: ParsedField<string>;
-  destination: ParsedField<DestinationType>;
   raw: string;
   overallConfidence: number;
 }
@@ -65,10 +56,6 @@ const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
 const PHONE_RE = /(?:\+91[\s-]?)?(?:\d[\s-]?){10}/g;
 const RANGE_RE = /(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*(?:\+)?\s*(?:yrs?|years?)/i;
 const SINGLE_YEARS_RE = /~?\s*(\d{1,2})\s*\+?\s*(?:yrs?|years?)/i;
-
-const PLATFORM_HOSTS = ['lever.co', 'greenhouse.io', 'workday', 'naukri.com', 'linkedin.com', 'indeed.', 'wellfound.com', 'instahyre.com'];
-const RECRUITER_HINTS = ['search', 'talent', 'hunt', 'consultant', 'staffing', 'hiring', 'recruit', 'placement'];
-const GENERIC_MAILBOXES = ['careers', 'jobs', 'hr', 'recruitment', 'hiring', 'apply', 'talent'];
 
 const CITIES = [
   'Bangalore', 'Bengaluru', 'Mumbai', 'Delhi', 'Gurgaon', 'Gurugram', 'Noida', 'Manesar',
@@ -231,50 +218,17 @@ function parseRoute(text: string): { method: ParsedField<ApplyMethod>; value: Pa
   return { method: none(), value: none(), jd: jdUrl ? field(jdUrl, 0.9, null) : none() };
 }
 
-/**
- * D13 field 2 — where the application lands.
- *
- * A suggestion the poster confirms in one tap, never a silent classification:
- * calling a genuine hiring manager an "external recruiter" on their own post is
- * a meaningful slur, and the domain heuristic cannot tell the difference.
- */
-export function inferDestination(method: ApplyMethod, value: string): { value: DestinationType; confidence: number } {
-  const v = String(value ?? '').toLowerCase();
-
-  if (method === 'through_me') return { value: 'via_poster', confidence: 1 };
-  if (method === 'phone') return { value: 'named_person', confidence: 0.7 };
-
-  if (method === 'link') {
-    if (PLATFORM_HOSTS.some((h) => v.includes(h))) return { value: 'third_party_platform', confidence: 0.85 };
-    if (/\/(careers|jobs)\b/.test(v)) return { value: 'company_ats', confidence: 0.8 };
-    return { value: 'company_ats', confidence: 0.55 };
-  }
-
-  const [mailbox = '', domain = ''] = v.split('@');
-  if (RECRUITER_HINTS.some((h) => domain.includes(h))) return { value: 'external_recruiter', confidence: 0.75 };
-  if (GENERIC_MAILBOXES.some((m) => mailbox === m || mailbox.startsWith(`${m}.`))) {
-    return { value: 'company_ats', confidence: 0.9 };
-  }
-  return { value: 'named_person', confidence: 0.8 };
-}
-
 export function parsePost(text: string): ParsedPost {
   const raw = String(text ?? '');
   if (!raw.trim()) {
     return {
       title: none(), company: none(), locations: none(), experience: none(),
       compensation: none(), applyMethod: none(), applyValue: none(), jdUrl: none(),
-      destination: none(), raw, overallConfidence: 0,
+      raw, overallConfidence: 0,
     };
   }
 
   const { method, value, jd } = parseRoute(raw);
-  const destination = value.value && method.value
-    ? (() => {
-        const d = inferDestination(method.value!, value.value!);
-        return field<DestinationType>(d.value, d.confidence, value.source);
-      })()
-    : none<DestinationType>();
 
   const parsed: ParsedPost = {
     title: parseTitle(raw),
@@ -285,7 +239,6 @@ export function parsePost(text: string): ParsedPost {
     applyMethod: method,
     applyValue: value,
     jdUrl: jd,
-    destination,
     raw,
     overallConfidence: 0,
   };

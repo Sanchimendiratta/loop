@@ -27,7 +27,7 @@ export const LOOP_SCHOOL = {
  * cheapest possible forgery of the one signal we treat as proof.
  */
 export function tierForEmail(email: string, school: { verifiedDomains: string[] }): 'A' | null {
-  // Exactly one '@', and the domain is what follows it.
+  // Exactly one '@', a non-empty local part, and the domain is what follows it.
   //
   // `split('@')[1]` is NOT the same thing and is a real bypass: for
   // `attacker@astra.xlri.ac.in@evil.com` it returns the allowlisted middle
@@ -35,9 +35,15 @@ export function tierForEmail(email: string, school: { verifiedDomains: string[] 
   // verification to a forged address, on the one signal this product treats as
   // proof. Requiring a single '@' rejects malformed input instead of guessing
   // which part of it to trust.
+  //
+  // The local part is checked for the same reason, not as general address
+  // hygiene: `@astra.xlri.ac.in` has the allowlisted domain but no mailbox, so
+  // it cannot be delivered to and therefore cannot be anyone's institute
+  // address. Granting it instant membership would hand the one unreviewed
+  // route in this product to a string nobody owns.
   const parts = String(email ?? '').trim().toLowerCase().split('@');
   if (parts.length !== 2) return null;
-  const domain = parts[1];
-  if (!domain) return null;
+  const [local, domain] = parts;
+  if (!local || !domain) return null;
   return school.verifiedDomains.some((d) => d.toLowerCase() === domain) ? 'A' : null;
 }

@@ -16,7 +16,9 @@ describe('status labels are plain language (§10)', () => {
       const l = STATUS_LABEL[s];
       expect(l, s).toBeTruthy();
       expect(l, s).not.toMatch(/_/);
-      expect(l[0], s).toBe(l[0].toUpperCase());
+      // A leading A-Z specifically: `l[0] === l[0].toUpperCase()` is also true
+      // of a digit or a punctuation mark, so it would pass for "_offer".
+      expect(l, s).toMatch(/^[A-Z]/);
     }
   });
 

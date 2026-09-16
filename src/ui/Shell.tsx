@@ -16,8 +16,7 @@ export interface ShellProps {
 }
 
 /**
- * The authenticated app's chrome: nav with badge counts, a search entry, and
- * a footer. Deliberately dumb — it renders whatever `nav` it is given and has
+ * The authenticated app's chrome: nav with badge counts, and a footer. Deliberately dumb — it renders whatever `nav` it is given and has
  * no opinion on verification. `App` mounts this only inside
  * `VerificationGate`'s children, which is what keeps it (and the badge counts
  * it renders) off the screen for anyone the gate is blocking; the persona
@@ -58,17 +57,10 @@ export function Shell({ nav, active, onNavigate, children }: ShellProps) {
           })}
         </nav>
 
-        {/* Directory owns real search (a later task); this is a reachable,
-            inert placeholder until then. */}
-        <div className="ml-auto">
-          <input
-            type="search"
-            disabled
-            placeholder="Search alumni, companies, roles…"
-            aria-label="Search"
-            className="w-56 rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-400 placeholder:text-stone-400 disabled:cursor-not-allowed"
-          />
-        </div>
+        {/* No search box. Lite has no directory and no member search, so an
+            inert input here would promise the user a feature that does not
+            exist — worse than a stale comment, which only misleads the next
+            engineer. */}
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>

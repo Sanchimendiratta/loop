@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { MIN_CONFIDENCE, inferDestination, parsePost } from '../src/core/parse.ts';
+import { MIN_CONFIDENCE, parsePost } from '../src/core/parse.ts';
 import {
   ALL_MESSAGES, MSG_1_CONFIDENTIAL_STARTUP, MSG_2_PHONE_ROUTE,
   MSG_3_SEARCH_FIRM, MSG_4_NAMED_COMPANY, MSG_5_CAREERS_EMAIL,
@@ -108,28 +108,6 @@ describe('company — the weak field, per spec §5', () => {
         if (f.confidence < MIN_CONFIDENCE) expect(f.value).toBeNull();
       }
     }
-  });
-});
-
-describe('destination inference (D13 field 2)', () => {
-  test('a careers address is a company application', () => {
-    expect(inferDestination('email', 'careers@anveshan.farm').value).toBe('company_ats');
-  });
-
-  test('a named person at the company is a direct route', () => {
-    expect(inferDestination('email', 'meera.iyer@foodhak.com').value).toBe('named_person');
-  });
-
-  test('a search-firm address is an external recruiter', () => {
-    expect(inferDestination('email', 'ravi@vertexsearchpartners.com').value).toBe('external_recruiter');
-  });
-
-  test('a jobs-platform link is a third-party platform', () => {
-    expect(inferDestination('link', 'https://jobs.lever.co/impactco/x').value).toBe('third_party_platform');
-  });
-
-  test('a phone number is a named person', () => {
-    expect(inferDestination('phone', '8800029599').value).toBe('named_person');
   });
 });
 

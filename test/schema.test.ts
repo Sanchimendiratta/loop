@@ -9,6 +9,10 @@ test('the status ladder is Lite’s seven values in order', () => {
 });
 
 test('every terminal status is a real status', () => {
+  // The length assertion is what stops this passing against an empty array —
+  // which would silently make every row eligible for the staleness dot.
+  expect(TERMINAL_APPLICATION_STATUSES).toEqual(['offer', 'rejected', 'no_response']);
+  expect(TERMINAL_APPLICATION_STATUSES).toHaveLength(3);
   for (const s of TERMINAL_APPLICATION_STATUSES) expect(APPLICATION_STATUSES).toContain(s);
 });
 

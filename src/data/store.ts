@@ -180,6 +180,23 @@ function nextId(prefix: string): string {
 // Session
 // ---------------------------------------------------------------------------
 
+/**
+ * The viewer's own record, in full — email, googleSub, LinkedIn URL, and the
+ * reviewer's decision note.
+ *
+ * The third and last read in this file that does NOT begin with
+ * `viewerOrNull()`, and deliberately so: it answers only ever about the person
+ * asking, so there is no one for it to leak to. Gating it on `verified` would
+ * also break the two screens that exist precisely for the members it would
+ * refuse — `VerificationGate` reads `status` to decide which gate to show, and
+ * the persona switcher sits above that gate so a pending member is not
+ * stranded with no way back to a verified account.
+ *
+ * The exemption is bounded by "own record only". It must never grow a
+ * `memberId` parameter: the moment it can answer about someone else it becomes
+ * the directory read Lite deleted, and rule 2 — applicant details reach
+ * exactly one person — would have a second, ungated way around it.
+ */
 export function getCurrentMember(): Member | null {
   const s = getState();
   return s.members.find((m) => m.id === s.currentMemberId) ?? null;
@@ -569,6 +586,11 @@ export function publishPost(draft: PostDraft, now: number = Date.now()): JobPost
  * Applying is a targeted disclosure to exactly one member (rule 2), so it
  * notifies exactly one member: the poster. Nobody else learns that it
  * happened, including the other applicants on the same post.
+ *
+ * You cannot apply to your own post. It is nonsense in the product — you would
+ * be disclosing your details to yourself and then appear as your own applicant
+ * on your own My-posts sheet — and it would notify you that you had applied to
+ * you.
  */
 export function applyToPost(postId: string, now: number = Date.now()): Application {
   const viewer = requireViewer();
@@ -576,6 +598,9 @@ export function applyToPost(postId: string, now: number = Date.now()): Applicati
   const post = s.posts.find((p) => p.id === postId);
   if (!post) throw new RuleViolation('No such post.', 'unknown_post');
 
+  if (post.posterId === viewer.id) {
+    throw new RuleViolation('You cannot apply to your own post.', 'self_apply');
+  }
   if (s.applications.some((a) => a.jobPostId === postId && a.memberId === viewer.id)) {
     throw new RuleViolation('You have already applied to this role.', 'already_applied');
   }
@@ -590,16 +615,14 @@ export function applyToPost(postId: string, now: number = Date.now()): Applicati
   };
 
   s.applications = [...s.applications, application];
-  if (post.posterId !== viewer.id) {
-    notify(
-      s,
-      post.posterId,
-      'applied_to_your_post',
-      { actorName: viewer.name, roleTitle: post.title },
-      '/posts',
-      now,
-    );
-  }
+  notify(
+    s,
+    post.posterId,
+    'applied_to_your_post',
+    { actorName: viewer.name, roleTitle: post.title },
+    '/posts',
+    now,
+  );
   commit();
   return application;
 }
