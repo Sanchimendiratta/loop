@@ -68,6 +68,22 @@ describe('auto-advance', () => {
     expect(autoAdvanceFor(ghosted, at(46))).toBe('no_response');
   });
 
+  test('an accepted request does not lapse a day early', () => {
+    // A negative at the boundary: with `>` instead of `>=` this passes anyway,
+    // so the day-13 assertion is what actually pins it.
+    const r = req({ state: 'accepted', stateOwner: 'referrer', updatedAt: NOW });
+    expect(autoAdvanceFor(r, at(13))).toBeNull();
+    expect(autoAdvanceFor(r, at(14))).toBe('expired_unsubmitted');
+  });
+
+  test('a ghosted request is not auto-closed on the same day as its last nudge', () => {
+    // Guards the "one further day after the final nudge" rule; weakening it to
+    // >= 0 would close the loop the instant the third nudge went out.
+    const sameDay = req({ state: 'submitted', stateOwner: 'seeker', nudgeCount: 3, lastNudgedAt: at(45), updatedAt: NOW });
+    expect(autoAdvanceFor(sameDay, at(45))).toBeNull();
+    expect(autoAdvanceFor(sameDay, at(46))).toBe('no_response');
+  });
+
   test('a seeker who has not exhausted their nudges is not auto-closed', () => {
     const r = req({ state: 'submitted', stateOwner: 'seeker', nudgeCount: 1, lastNudgedAt: at(14), updatedAt: NOW });
     expect(autoAdvanceFor(r, at(20))).toBeNull();
