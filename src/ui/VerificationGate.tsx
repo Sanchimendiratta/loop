@@ -4,11 +4,16 @@ import { Card, cx } from './primitives.tsx';
 
 /**
  * D2: "an unverified account can see nothing." This is the whole product's
- * front door — one of five states, read once from `getCurrentMember().status`,
- * and every branch but `verified` renders in place of `children`. Nothing
- * behind this component — no nav, no badge count, no board, no tracker row —
- * is ever mounted for an account that fails this check, because React never
- * evaluates `children` unless this function returns it.
+ * front door — one of Lite's three member states, read once from
+ * `getCurrentMember().status`, and every branch but `verified` renders in
+ * place of `children`. Nothing behind this component — no nav, no badge count,
+ * no board, no sheet row — is ever mounted for an account that fails this
+ * check, because React never evaluates `children` unless this function returns
+ * it.
+ *
+ * This is a second line, not the line: the rule itself lives in
+ * `store.viewerOrNull()`, which every read begins with. A screen that forgot
+ * to mount inside this gate would still be handed nothing.
  */
 export function VerificationGate({ children }: { children: ReactNode }) {
   const member = getCurrentMember();
@@ -38,32 +43,13 @@ export function VerificationGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (member.status === 'rejected') {
-    // Lite has no appeals (Task 7) — this branch says who to contact instead
-    // once the store exposes the rejection note; for now it is the plain
-    // gate with no appeal path, which is honest about the current surface.
-    return (
-      <GateScreen title="We couldn't verify your account" tone="stop">
-        <p>Contact the alumni office if you believe this is a mistake.</p>
-      </GateScreen>
-    );
-  }
-
-  if (member.status === 'suspended') {
-    return (
-      <GateScreen title="Your account is suspended" tone="stop">
-        <p>You do not have access to Loop while your account is suspended. Contact the alumni office if you believe this is a mistake.</p>
-      </GateScreen>
-    );
-  }
-
-  // status === 'unverified': joined, but no verification case has been
-  // submitted yet — distinct from `pending`, which has evidence under review.
+  // status === 'rejected'. Lite has no appeals — §3 drops the second-reviewer
+  // path with the case table — so this branch names who to contact instead of
+  // offering one. `MemberStatus` is three values now, so there is nothing
+  // after this to branch on.
   return (
-    <GateScreen title="Verify your account to continue" tone="wait">
-      <p>
-        Loop is alumni-only (§6). Submit your verification details and a reviewer will confirm you within 48 hours.
-      </p>
+    <GateScreen title="We couldn't verify your account" tone="stop">
+      <p>Contact the alumni office if you believe this is a mistake.</p>
     </GateScreen>
   );
 }

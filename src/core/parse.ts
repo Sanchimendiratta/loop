@@ -11,7 +11,23 @@
  * That is why every field carries a confidence and why `parseField` nulls the
  * value below the threshold rather than leaving the caller to remember.
  */
-import type { ApplyMethod, DestinationType } from '../data/schema.ts';
+import type { ApplyMethod } from '../data/schema.ts';
+
+/**
+ * Where the CV lands, as the parser reads it.
+ *
+ * Lite dropped `destination_type` from the schema (§7): a post stores the rung
+ * alone, and `core/disclosure.ts` writes its line from that. The classification
+ * survives HERE, as a parser-local type, because it is still the signal that
+ * tells the composer which apply route it is looking at — but nothing persists
+ * it, which is exactly why it is no longer a schema type.
+ */
+export type DestinationType =
+  | 'company_ats'
+  | 'named_person'
+  | 'external_recruiter'
+  | 'third_party_platform'
+  | 'via_poster';
 
 export const MIN_CONFIDENCE = 0.5;
 
@@ -225,7 +241,7 @@ function parseRoute(text: string): { method: ParsedField<ApplyMethod>; value: Pa
 export function inferDestination(method: ApplyMethod, value: string): { value: DestinationType; confidence: number } {
   const v = String(value ?? '').toLowerCase();
 
-  if (method === 'via_loop') return { value: 'via_poster', confidence: 1 };
+  if (method === 'through_me') return { value: 'via_poster', confidence: 1 };
   if (method === 'phone') return { value: 'named_person', confidence: 0.7 };
 
   if (method === 'link') {

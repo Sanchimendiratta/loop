@@ -1,5 +1,5 @@
 /**
- * Render smoke test + architectural guards (Task 25).
+ * Render smoke test + architectural guards.
  *
  * A passing typecheck does not catch a bad store call, a null company on a
  * confidential post, or a member with no employment — this does. Every
@@ -9,9 +9,9 @@
  * all; it does not assert on markup, except where noted below.
  *
  * Two things beyond "it rendered" (a third — field scoping on a per-member
- * read — lost its subject when Task 1 pruned `getMember`/`listMembers` with
- * the directory; Task 6 rewrites the store's read surface and gets its own
- * regression test there):
+ * read — lost its subject when the directory was pruned; what replaced it is
+ * the store's rule 2, "applicant details reach exactly one person", which is
+ * pinned by `test/store.test.ts` rather than by a render):
  *
  *   1. The `getState()` guard (and its two neighbours). Grepped statically,
  *      before Vite is even started — see `checkArchitecturalGuard` below.
@@ -41,14 +41,15 @@ function fail(label, detail) {
 //
 // `src/data/store.ts` documents `getState()` as "TEST-ONLY" and explains why:
 // it is the one function in that file that answers without asking who is
-// looking, bypassing every viewer scope at once — `getState().members` hands
-// back the blocked-company list `toPublicMember` exists to strip, and
-// `getState().requests` hands back every private 1:1 request in the network.
-// A screen that needs different data needs a new store function, not this.
-// `localStorage` and `core/privacy.ts` are the same shape of hole: the first
-// is persistence, which is `store.ts`'s job alone; the second is the privacy
-// filter, which only means anything applied consistently, inside the store's
-// read functions — not re-implemented ad hoc in a component.
+// looking, bypassing all three of Lite's rules at once — `getState()
+// .applications` hands back every applicant on every post, which rule 2 keeps
+// to exactly one person, and it answers for a pending viewer that rule 1 says
+// may read nothing. A screen that needs different data needs a new store
+// function, not this. `localStorage` and `core/privacy.ts` are the same shape
+// of hole: the first is persistence, which is `store.ts`'s job alone; the
+// second is a module Lite deleted — D2 now lives in `store.viewerOrNull()`,
+// and a UI module reimporting a privacy filter would be applying it ad hoc,
+// outside every read that is supposed to carry it.
 // ---------------------------------------------------------------------------
 function listSourceFiles(dir) {
   const out = [];
@@ -73,10 +74,11 @@ function checkArchitecturalGuard() {
     if (/\bgetState\s*\(/.test(text) || /(?:^|[{,\s])getState(?:\s*,|\s*})/.test(text)) {
       violations.push(
         `${rel} calls or imports store.getState(). That function is TEST-ONLY (see src/data/store.ts) — ` +
-          `it answers without asking who is looking, so it bypasses every viewer scope at once: it would hand ` +
-          `this component the blocked-company list toPublicMember exists to strip, or every private 1:1 request ` +
-          `in the network, not just the viewer's own. A screen that needs different data needs a new store ` +
-          `function that takes the viewer into account — never this one.`,
+          `it answers without asking who is looking, so it bypasses all three of Lite's rules at once: it ` +
+          `would hand this component every applicant on every post, which rule 2 keeps to exactly one ` +
+          `person, and it would answer for a pending viewer that rule 1 says may read nothing. A screen ` +
+          `that needs different data needs a new store function that takes the viewer into account — ` +
+          `never this one.`,
       );
     }
     if (/\blocalStorage\b/.test(text)) {
@@ -88,10 +90,10 @@ function checkArchitecturalGuard() {
     }
     if (/from\s+['"][^'"]*core\/privacy(?:\.ts)?['"]/.test(text)) {
       violations.push(
-        `${rel} imports core/privacy.ts directly. The privacy filter only means anything if it is applied the ` +
-          `same way on every read — that happens once, inside src/data/store.ts's read functions. A UI module ` +
-          `importing the filter itself could apply it inconsistently, or forget to, on some path the store ` +
-          `never sees.`,
+        `${rel} imports core/privacy.ts directly. Lite deleted that module — D2 lives in ` +
+          `store.viewerOrNull() now, and every exported read begins with it. A privacy filter only means ` +
+          `anything if it is applied the same way on every read; a UI module importing one could apply it ` +
+          `inconsistently, or forget to, on some path the store never sees.`,
       );
     }
   }
@@ -125,7 +127,7 @@ const load = (p) => vite.ssrLoadModule(p);
 
 const store = await load('/src/data/store.ts');
 const now = Date.now();
-store.load({ now, runClockOnLoad: true });
+store.load({ now });
 
 const noop = () => {};
 const render = (Component, props) => renderToString(h(Component, props));
@@ -194,11 +196,10 @@ console.log(
 // to render for an unverified/pending viewer must carry none of the verified
 // membership by name.
 //
-// Lite has no directory, and Task 1 removed `getMember`/`listMembers` with
-// it, so the field-scoping regression test (Task 24's third assertion here)
-// has no surviving subject to run against — Task 6 rewrites the store's read
-// surface, and whatever replaces per-member field scoping gets its own
-// regression test there.
+// Lite has no directory, and `getMember`/`listMembers` went with it, so the
+// old field-scoping assertion here has no subject left. Its replacement is
+// rule 2 — applicant details reach only the poster — which `test/store.test.ts`
+// pins directly against the store rather than through a rendered screen.
 // ---------------------------------------------------------------------------
 console.log('\nD2 gate assertion:\n');
 

@@ -1,35 +1,40 @@
 /**
- * The demo network (Task 14).
+ * The Lite demo workspace.
  *
  * Everything here is a pure function of `now`: no `Math.random()`, no
- * `Date.now()`, no iteration order this file did not itself choose. The
- * filler alumni are generated from their loop index `i` by modular
- * arithmetic over fixed arrays, so `buildSeed(now)` is byte-identical across
- * calls — the store (Task 15) and its tests depend on that.
+ * `Date.now()`, no iteration order this file did not itself choose. Ids are
+ * literal strings. `buildSeed(now)` is byte-identical across calls, and
+ * `test/seed.test.ts` pins that with a `JSON.stringify` comparison — the store
+ * and its tests depend on it.
  *
  * The five job posts are not invented: they are §5.0's real WhatsApp-forward
- * corpus, run through the actual parser (`parsePost`) so the demo exercises
- * the same code path a real paste would. Only what the parser cannot know —
- * who posted it, at what rung, and (for the three that withhold the company)
- * the confidential descriptor — is filled in by hand.
+ * corpus, run through the actual parser (`parsePost`) so the demo exercises the
+ * same code path a real paste would. Only what the parser cannot know — who
+ * posted it, at what rung, the function, and (for the three that withhold the
+ * company) the confidential descriptor — is filled in by hand. The titles are
+ * hand-written too, deliberately: the parser's best guess at MSG_2 is "for a
+ * Strategy role with…", which is a fragment, not a role. §9's rule is that the
+ * parser pre-fills a form a human confirms, and this seed is what "a human
+ * confirmed it" looks like.
+ *
+ * Lite has no duplicate-merge and therefore no `dedupeHash`: §1 drops it
+ * outright below a few hundred posts, and §7's `job_post` has no such column.
+ * Two posts of the same role simply appear twice.
  */
 import { SCHEMA_VERSION } from './schema.ts';
 import type {
-  Company,
+  Application,
+  Connection,
+  FunctionArea,
   JobPost,
   Member,
-  MemberStatus,
-  PostApplication,
-  PostShare,
-  PrivacySettings,
+  Notification,
+  PostStatus,
+  PushSubscription,
   Report,
-  ResumeVersion,
-  School,
-  VerificationCase,
-  VerificationTier,
-  Vouch,
 } from './schema.ts';
-import { inferDestination, parsePost } from '../core/parse.ts';
+import { parsePost } from '../core/parse.ts';
+import { notificationBody } from '../core/notifications.ts';
 import { DAY_MS } from '../core/time.ts';
 import {
   MSG_1_CONFIDENTIAL_STARTUP,
@@ -39,667 +44,263 @@ import {
   MSG_5_CAREERS_EMAIL,
 } from './messages.ts';
 
-/**
- * Duplicate-post hashing, relocated from `core/dedupe.ts` (deleted along with
- * the referral-request object it also served). `src/data/store.ts` keeps its
- * own copy for the same reason — this one exists so the seeded fixtures below
- * carry a `dedupeHash` computed the same way `publishPost` computes one, or a
- * forward matching an existing seed post would fail to merge into it.
- */
-const TRACKING_PARAMS = [
-  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-  'fbclid', 'gclid', 'ref', 'source', 'src',
-];
-
-const TITLE_SYNONYMS: [RegExp, string][] = [
-  [/\bsr\.?\b/gi, 'senior'],
-  [/\bjr\.?\b/gi, 'junior'],
-  [/\bmgr\.?\b/gi, 'manager'],
-  [/\bassoc\.?\b/gi, 'associate'],
-  [/\bvp\b/gi, 'vice president'],
-];
-
-function normaliseRoute(v: string): string {
-  const raw = String(v ?? '').trim();
-  if (!raw) return '';
-  if (raw.includes('@') && !raw.startsWith('http')) return raw.toLowerCase();
-  if (/^https?:\/\//i.test(raw)) {
-    try {
-      const u = new URL(raw);
-      const host = u.host.toLowerCase().replace(/^www\./, '');
-      const path = u.pathname.replace(/\/+$/, '');
-      for (const t of TRACKING_PARAMS) u.searchParams.delete(t);
-      u.searchParams.sort();
-      const query = u.searchParams.toString();
-      return `${host}${path}${query ? `?${query}` : ''}`;
-    } catch {
-      return raw.toLowerCase();
-    }
-  }
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length >= 10) {
-    if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
-    if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
-    return digits;
-  }
-  return raw.toLowerCase();
-}
-
-function normaliseTitle(t: string): string {
-  let out = String(t ?? '').toLowerCase();
-  for (const [re, to] of TITLE_SYNONYMS) out = out.replace(re, to);
-  return out.replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function dedupeHash(applyValue: string, title: string): string {
-  return `${normaliseRoute(applyValue)}::${normaliseTitle(title)}`;
-}
-
 export interface AppState {
   version: number;
-  school: School;
   members: Member[];
-  companies: Company[];
   posts: JobPost[];
-  shares: PostShare[];
-  applications: PostApplication[];
-  cases: VerificationCase[];
-  resumes: ResumeVersion[];
-  vouches: Vouch[];
+  applications: Application[];
+  notifications: Notification[];
+  pushSubscriptions: PushSubscription[];
   reports: Report[];
   currentMemberId: string;
 }
 
-type Caps = Member['caps'];
-
-const noCaps = (): Caps => ({ maxOpen: 0, maxPerMonth: 0, paused: false, autoDeclineMessage: '' });
-
-const defaultPrivacy = (overrides: Partial<PrivacySettings> = {}): PrivacySettings => ({
-  confidentialSearch: false,
-  blockedCompanyIds: [],
-  blockedMemberIds: [],
-  ...overrides,
-});
-
-const evidenceFor = (m: Member) => ({
-  linkedinUrl: m.linkedinUrl ?? '',
-  batch: m.batch,
-  programme: m.programme,
-  nameAtGraduation: m.name,
-});
-
-// ---------------------------------------------------------------------------
-// Companies — 30 that the filler alumni cycle through, plus one confidential
-// employer (Rohit's) that never appears on a public post.
-// ---------------------------------------------------------------------------
-
-interface CompanySeed { id: string; name: string; domain: string | null }
-
-const FIXED_COMPANIES: CompanySeed[] = [
-  { id: 'c_foodhak', name: 'Foodhak', domain: 'foodhak.com' },
-  { id: 'c_anveshan', name: 'Anveshan', domain: 'anveshan.farm' },
-  { id: 'c_tcs', name: 'Tata Consultancy Services', domain: 'tcs.com' },
-  { id: 'c_infosys', name: 'Infosys', domain: 'infosys.com' },
-  { id: 'c_hul', name: 'Hindustan Unilever', domain: 'hul.co.in' },
-  { id: 'c_itc', name: 'ITC Limited', domain: 'itc.in' },
-  { id: 'c_deloitte', name: 'Deloitte', domain: 'deloitte.com' },
-  { id: 'c_mckinsey', name: 'McKinsey & Company', domain: 'mckinsey.com' },
-  { id: 'c_amazon', name: 'Amazon', domain: 'amazon.com' },
-  { id: 'c_flipkart', name: 'Flipkart', domain: 'flipkart.com' },
-  { id: 'c_swiggy', name: 'Swiggy', domain: 'swiggy.in' },
-  { id: 'c_zomato', name: 'Zomato', domain: 'zomato.com' },
-  { id: 'c_paytm', name: 'Paytm', domain: 'paytm.com' },
-  { id: 'c_phonepe', name: 'PhonePe', domain: 'phonepe.com' },
-  { id: 'c_reliance', name: 'Reliance Industries', domain: 'ril.com' },
-  { id: 'c_adityabirla', name: 'Aditya Birla Group', domain: 'adityabirla.com' },
-  { id: 'c_bajajfinserv', name: 'Bajaj Finserv', domain: 'bajajfinserv.in' },
-  { id: 'c_hdfcbank', name: 'HDFC Bank', domain: 'hdfcbank.com' },
-  { id: 'c_icicibank', name: 'ICICI Bank', domain: 'icicibank.com' },
-  { id: 'c_axisbank', name: 'Axis Bank', domain: 'axisbank.com' },
-  { id: 'c_wipro', name: 'Wipro', domain: 'wipro.com' },
-  { id: 'c_accenture', name: 'Accenture', domain: 'accenture.com' },
-  { id: 'c_ey', name: 'EY', domain: 'ey.com' },
-  { id: 'c_kpmg', name: 'KPMG', domain: 'kpmg.com' },
-  { id: 'c_pwc', name: 'PwC', domain: 'pwc.com' },
-  { id: 'c_nykaa', name: 'Nykaa', domain: 'nykaa.com' },
-  { id: 'c_byjus', name: "BYJU'S", domain: 'byjus.com' },
-  { id: 'c_ola', name: 'Ola', domain: 'olacabs.com' },
-  { id: 'c_myntra', name: 'Myntra', domain: 'myntra.com' },
-  { id: 'c_tatamotors', name: 'Tata Motors', domain: 'tatamotors.com' },
-];
-
-const EXTRA_COMPANIES: CompanySeed[] = [
-  // Rohit's employer for the §5.0 confidential startup post — never disclosed
-  // on the card itself (JobPost.companyId stays null there), only known here.
-  { id: 'c_impactco', name: 'ImpactCo', domain: 'impactco.com' },
-];
-
-const ALL_COMPANIES: Company[] = [...FIXED_COMPANIES, ...EXTRA_COMPANIES].map((c) => ({ ...c }));
-
-// ---------------------------------------------------------------------------
-// Filler-generation vocabulary — fixed arrays, indexed deterministically.
-// ---------------------------------------------------------------------------
-
-const FIRST_NAMES = [
-  'Aarav', 'Vihaan', 'Aditi', 'Diya', 'Kabir', 'Ishaan', 'Myra', 'Advait',
-  'Reyansh', 'Saanvi', 'Arjun', 'Kiara', 'Vivaan', 'Anaya', 'Rudra', 'Pihu',
-  'Dhruv', 'Ira', 'Yash', 'Tara', 'Nikhil', 'Pooja', 'Rahul', 'Sneha',
-];
-const LAST_NAMES = [
-  'Sharma', 'Verma', 'Gupta', 'Iyer', 'Nair', 'Menon', 'Rao', 'Reddy',
-  'Shah', 'Mehta', 'Kapoor', 'Malhotra', 'Chopra', 'Bose', 'Sen', 'Das',
-  'Pillai', 'Krishnan', 'Joshi', 'Kulkarni', 'Bhatt', 'Chatterjee', 'Mukherjee', 'Agarwal',
-];
-const FUNCTIONS = [
-  'Strategy', 'Marketing', 'Finance', 'HR', 'Operations',
-  'Sales', 'Product', 'Consulting', 'Analytics', 'Supply Chain',
-];
-const LOCATIONS = [
-  'Bangalore', 'Mumbai', 'Delhi', 'Gurgaon', 'Pune',
-  'Hyderabad', 'Chennai', 'Kolkata', 'Remote', 'Singapore',
-];
-const PROGRAMMES = ['BM', 'HRM', 'GM'];
-
-const FILLER_COUNT = 220;
-
-/** Three exceptional statuses, deliberately placed at indices whose company
- * occurrence rank (k) is >= 3 — so no company ever loses one of its
- * guaranteed three open-to-referring alumni to an unverified filler. */
-const EXCEPTION_STATUS: Record<number, MemberStatus> = {
-  111: 'pending',
-  148: 'unverified',
-  185: 'rejected',
-};
-
-/** m_fill_200 demonstrates the Tier C / vouching path rather than A or B. */
-const TIER_OVERRIDE: Record<number, VerificationTier> = { 200: 'C' };
-
-function buildFillerMembers(now: number, schoolId: string): Member[] {
-  const members: Member[] = [];
-  for (let i = 0; i < FILLER_COUNT; i++) {
-    const id = `m_fill_${i}`;
-    const co = FIXED_COMPANIES[i % FIXED_COMPANIES.length];
-    const k = Math.floor(i / FIXED_COMPANIES.length); // occurrence rank within that company
-    const first = FIRST_NAMES[i % FIRST_NAMES.length];
-    const last = LAST_NAMES[(i * 7 + 3) % LAST_NAMES.length];
-    const batch = 2005 + (i % 20);
-    const programme = PROGRAMMES[i % PROGRAMMES.length];
-    const fn = FUNCTIONS[i % FUNCTIONS.length];
-    const loc = LOCATIONS[(i + 2) % LOCATIONS.length];
-
-    const status: MemberStatus = EXCEPTION_STATUS[i] ?? 'verified';
-    const useAstra = i % 5 === 0;
-    const domain = useAstra ? 'astra.xlri.ac.in' : 'gmail.com';
-    const email = `${first.toLowerCase()}.${last.toLowerCase()}.${i}@${domain}`;
-    const tier: VerificationTier | null =
-      status === 'verified' ? (TIER_OVERRIDE[i] ?? (useAstra ? 'A' : 'B')) : null;
-
-    // §7.1 / DL1: at least three verified alumni per company must accept
-    // referrals unimpeded — the first three occurrences of each company
-    // (k = 0, 1, 2) are always among them.
-    const isGuaranteedOpen = k < 3;
-    const isCasualOpen = i % 4 === 0;
-    const openToReferring = status === 'verified' && (isGuaranteedOpen || isCasualOpen);
-    const caps: Caps = !openToReferring
-      ? noCaps()
-      : isGuaranteedOpen
-        ? { maxOpen: 5, maxPerMonth: 5, paused: false, autoDeclineMessage: "Happy to help — I'll get back to you within a few days." }
-        : { maxOpen: 2, maxPerMonth: 2, paused: i % 8 === 0, autoDeclineMessage: 'At capacity for now — please check back next month.' };
-
-    members.push({
-      id,
-      schoolId,
-      googleSub: `gsub_${id}`,
-      email,
-      name: `${first} ${last}`,
-      batch,
-      programme,
-      status,
-      tier,
-      isAdmin: false,
-      companyId: co.id,
-      title: `${fn} ${k === 0 ? 'Lead' : 'Associate'}`,
-      function: fn,
-      location: loc,
-      linkedinUrl: `https://linkedin.com/in/${id}`,
-      openToReferring,
-      caps,
-      privacy: defaultPrivacy({ confidentialSearch: i % 6 === 0 }),
-      resumeVersionId: null,
-      joinedAt: now - ((i % 365) + 30) * DAY_MS,
-    });
-  }
-  return members;
-}
-
-// ---------------------------------------------------------------------------
-// Job posts — the five §5.0 messages, parsed for real, annotated by hand only
-// where the parser is deliberately silent (D13/D14: relationship rung, and,
-// for the three that withhold the company, the confidential descriptor).
-// ---------------------------------------------------------------------------
-
-interface FixturePostInput {
+interface PostSpec {
   id: string;
   posterId: string;
-  companyId: string | null;
-  confidentialDescriptor: string | null;
-  raw: string;
-  // Required, like every other judgement field below (`companyId`,
-  // `confidentialDescriptor`, `posterRelationship`, `hiringContactName`) —
-  // never taken from the parser. §9 requires a human to confirm a parsed
-  // title before a post publishes; a seeded post represents one that already
-  // passed that step, so its title is a human input here too, not a parser
-  // guess threaded straight through. See MSG_2's fixture below for why this
-  // was made required rather than merely overridden.
   title: string;
-  posterRelationship: JobPost['posterRelationship'];
-  hiringContactName: string | null;
-  functionLabel: string | null;
+  function: FunctionArea;
+  connection: Connection;
+  contactName?: string | null;
+  companyName?: string | null;
+  isConfidential?: boolean;
+  confidentialDescriptor?: string | null;
+  note?: string | null;
   postedAt: number;
-  lastConfirmedAt: number;
+  postStatus?: PostStatus;
 }
 
-function buildFixturePost(input: FixturePostInput): JobPost {
-  const parsed = parsePost(input.raw);
-  const title = input.title;
-  const locations = parsed.locations.value ?? [];
-  const exp = parsed.experience.value;
-  const applyMethod = parsed.applyMethod.value ?? 'link';
-  const applyValue = parsed.applyValue.value ?? '';
-  const destinationType = parsed.destination.value ?? inferDestination(applyMethod, applyValue).value;
-
+/**
+ * The parser fills what a paste actually states — location, experience band,
+ * compensation line, apply route, JD link — and the spec supplies the four
+ * things it cannot know. A post is the union, never a guess.
+ */
+function postFromMessage(raw: string, o: PostSpec): JobPost {
+  const p = parsePost(raw);
+  const locations = p.locations.value ?? [];
+  const confidential = o.isConfidential ?? false;
   return {
-    id: input.id,
-    posterId: input.posterId,
-    companyId: input.companyId,
-    confidentialDescriptor: input.confidentialDescriptor,
-    title,
-    locations,
-    expMin: exp?.min ?? null,
-    expMax: exp?.max ?? null,
-    compText: parsed.compensation.value,
-    function: input.functionLabel,
-    applyMethod,
-    applyValue,
-    jdUrl: parsed.jdUrl.value,
-    posterRelationship: input.posterRelationship,
-    destinationType,
-    hiringContactName: input.hiringContactName,
-    hiringContactValue: destinationType === 'named_person' ? applyValue : null,
-    contactConsentConfirmed: true,
-    contactRemovalRequestedAt: null,
-    rawText: parsed.raw,
-    parseConfidence: parsed.overallConfidence,
-    dedupeHash: dedupeHash(applyValue, title),
-    postedAt: input.postedAt,
-    lastConfirmedAt: input.lastConfirmedAt,
-    confirmState: 'open',
-    archivedAt: null,
-    viewCount: 0,
-    unreachableFlags: [],
-    reportedBy: [],
+    id: o.id,
+    posterId: o.posterId,
+    title: o.title,
+    companyName: confidential ? null : (o.companyName ?? null),
+    isConfidential: confidential,
+    confidentialDescriptor: confidential ? (o.confidentialDescriptor ?? null) : null,
+    function: o.function,
+    location: locations.filter((l) => l !== 'Remote').join(', '),
+    isRemote: locations.includes('Remote'),
+    expMin: p.experience.value?.min ?? 0,
+    expMax: p.experience.value?.max ?? 0,
+    compText: p.compensation.value,
+    applyMethod: p.applyMethod.value ?? 'email',
+    applyValue: p.applyValue.value ?? '',
+    jdUrl: p.jdUrl.value,
+    note: o.note ?? null,
+    connection: o.connection,
+    contactName: o.contactName ?? null,
+    rawPaste: raw,
+    postedAt: o.postedAt,
+    postStatus: o.postStatus ?? 'open',
+    lastConfirmedAt: o.postedAt,
   };
 }
-
-// ---------------------------------------------------------------------------
-// buildSeed
-// ---------------------------------------------------------------------------
 
 export function buildSeed(now: number): AppState {
-  const school: School = { id: 'sch_xlri', name: 'XLRI Jamshedpur', verifiedDomains: ['astra.xlri.ac.in'] };
+  const days = (n: number): number => now - n * DAY_MS;
 
-  // -- Named §4 personas ----------------------------------------------------
-
-  const ananya: Member = {
-    id: 'm_ananya',
-    schoolId: school.id,
-    googleSub: 'gsub_m_ananya',
-    email: 'ananya.rao@astra.xlri.ac.in',
-    name: 'Ananya Rao',
-    batch: 2026,
-    programme: 'BM',
-    status: 'verified',
-    tier: 'A',
-    isAdmin: false,
-    companyId: null,
-    title: null,
-    function: null,
-    location: 'Jamshedpur',
-    linkedinUrl: 'https://linkedin.com/in/m_ananya',
-    openToReferring: false,
-    caps: noCaps(),
-    privacy: defaultPrivacy({ confidentialSearch: true }),
-    resumeVersionId: 'res_ananya_v1',
-    joinedAt: now - 40 * DAY_MS,
-  };
-
-  const rohit: Member = {
-    id: 'm_rohit',
-    schoolId: school.id,
-    googleSub: 'gsub_m_rohit',
-    email: 'rohit.mehta.hrm@gmail.com',
-    name: 'Rohit Mehta',
-    batch: 2019,
-    programme: 'HRM',
-    status: 'verified',
-    tier: 'B',
-    isAdmin: false,
-    companyId: 'c_impactco',
-    title: 'AVP - People & Culture',
-    function: 'HR',
-    location: 'Bangalore',
-    linkedinUrl: 'https://linkedin.com/in/m_rohit',
-    openToReferring: true,
-    caps: { maxOpen: 2, maxPerMonth: 3, paused: false, autoDeclineMessage: 'Swamped this quarter — try me in January.' },
-    privacy: defaultPrivacy(),
-    resumeVersionId: null,
-    joinedAt: now - 2500 * DAY_MS,
-  };
-
-  const meera: Member = {
-    id: 'm_meera',
-    schoolId: school.id,
-    googleSub: 'gsub_m_meera',
-    email: 'meera.iyer@foodhak.com',
-    name: 'Meera Iyer',
-    batch: 2012,
-    programme: 'BM',
-    status: 'verified',
-    tier: 'B',
-    isAdmin: false,
-    companyId: 'c_foodhak',
-    title: 'Director',
-    function: 'Marketing',
-    location: 'UK',
-    linkedinUrl: 'https://linkedin.com/in/m_meera',
-    openToReferring: true,
-    caps: { maxOpen: 5, maxPerMonth: 5, paused: false, autoDeclineMessage: 'Happy to help — response may take a few days.' },
-    privacy: defaultPrivacy(),
-    resumeVersionId: null,
-    joinedAt: now - 5000 * DAY_MS,
-  };
-
-  const partho: Member = {
-    id: 'm_partho',
-    schoolId: school.id,
-    googleSub: 'gsub_m_partho',
-    email: 'partho.ghosh@gmail.com',
-    name: 'Partho Ghosh',
-    batch: 2009,
-    programme: 'BM',
-    status: 'verified',
-    tier: 'B',
-    isAdmin: false,
-    companyId: null,
-    title: 'Independent Consultant',
-    function: 'Consulting',
-    location: 'Delhi',
-    linkedinUrl: 'https://linkedin.com/in/m_partho',
-    openToReferring: false,
-    caps: noCaps(),
-    privacy: defaultPrivacy(),
-    resumeVersionId: null,
-    joinedAt: now - 6200 * DAY_MS,
-  };
-
-  const karan: Member = {
-    id: 'm_karan',
-    schoolId: school.id,
-    googleSub: 'gsub_m_karan',
-    email: 'karan.shah@gmail.com',
-    name: 'Karan Shah',
-    batch: 2020,
-    programme: 'BM',
-    status: 'verified',
-    tier: 'B',
-    isAdmin: false,
-    companyId: 'c_mckinsey',
-    title: 'Senior Associate',
-    function: 'Consulting',
-    location: 'Mumbai',
-    linkedinUrl: 'https://linkedin.com/in/m_karan',
-    openToReferring: false,
-    caps: noCaps(),
-    // Privacy-critical (§6/D6): Karan does not want colleagues at his own
-    // employer to discover he is on the network at all.
-    privacy: defaultPrivacy({ confidentialSearch: true, blockedCompanyIds: ['c_mckinsey'] }),
-    resumeVersionId: null,
-    joinedAt: now - 2100 * DAY_MS,
-  };
-
-  const admin: Member = {
-    id: 'm_admin',
-    schoolId: school.id,
-    googleSub: 'gsub_m_admin',
-    email: 'admin@astra.xlri.ac.in',
-    name: 'Admin Desk',
-    batch: 2000,
-    programme: 'Admin',
-    status: 'verified',
-    tier: 'A',
-    isAdmin: true,
-    companyId: null,
-    title: 'Alumni Relations',
-    function: 'Administration',
-    location: 'Jamshedpur',
-    linkedinUrl: 'https://linkedin.com/in/m_admin',
-    openToReferring: false,
-    caps: noCaps(),
-    privacy: defaultPrivacy(),
-    resumeVersionId: null,
-    joinedAt: now - 8000 * DAY_MS,
-  };
-
-  const fillerMembers = buildFillerMembers(now, school.id);
-  const members: Member[] = [ananya, rohit, meera, partho, karan, admin, ...fillerMembers];
-
-  // -- Verification cases & vouches -----------------------------------------
-
-  const cases: VerificationCase[] = [
-    { id: 'case_ananya', memberId: ananya.id, tier: 'A', evidence: evidenceFor(ananya), decision: 'approved', reviewerId: null, decidedAt: ananya.joinedAt, notes: 'Domain match — instant.', isAppeal: false, submittedAt: ananya.joinedAt },
-    { id: 'case_rohit', memberId: rohit.id, tier: 'B', evidence: evidenceFor(rohit), decision: 'approved', reviewerId: admin.id, decidedAt: rohit.joinedAt + DAY_MS, notes: 'LinkedIn education entry matches batch records.', isAppeal: false, submittedAt: rohit.joinedAt },
-    { id: 'case_meera', memberId: meera.id, tier: 'B', evidence: evidenceFor(meera), decision: 'approved', reviewerId: admin.id, decidedAt: meera.joinedAt + DAY_MS, notes: 'LinkedIn education entry matches batch records.', isAppeal: false, submittedAt: meera.joinedAt },
-    { id: 'case_partho', memberId: partho.id, tier: 'B', evidence: evidenceFor(partho), decision: 'approved', reviewerId: admin.id, decidedAt: partho.joinedAt + DAY_MS, notes: 'LinkedIn education entry matches batch records.', isAppeal: false, submittedAt: partho.joinedAt },
-    { id: 'case_karan', memberId: karan.id, tier: 'B', evidence: evidenceFor(karan), decision: 'approved', reviewerId: admin.id, decidedAt: karan.joinedAt + DAY_MS, notes: 'LinkedIn education entry matches batch records.', isAppeal: false, submittedAt: karan.joinedAt },
-    { id: 'case_admin', memberId: admin.id, tier: 'A', evidence: evidenceFor(admin), decision: 'approved', reviewerId: admin.id, decidedAt: admin.joinedAt, notes: 'Staff account.', isAppeal: false, submittedAt: admin.joinedAt },
-    // A pending Tier B case — an admin still has to look at this one.
+  // -------------------------------------------------------------------------
+  // Members — every gate state the product has, and both verification routes.
+  //
+  // Ananya is first deliberately: she is the current member, and the store
+  // tests reach for "the first verified non-admin" as the ordinary seeker.
+  // -------------------------------------------------------------------------
+  const members: Member[] = [
     {
-      id: 'case_fill_111_pending',
-      memberId: 'm_fill_111',
-      tier: 'B',
-      evidence: evidenceFor(fillerMembers[111]),
-      decision: 'pending',
-      reviewerId: null,
-      decidedAt: null,
-      notes: '',
-      isAppeal: false,
-      submittedAt: now - 2 * DAY_MS,
+      id: 'm_ananya', googleSub: 'g_ananya', email: 'ananya.rao@astra.xlri.ac.in',
+      name: 'Ananya Rao', batch: 2021, programme: 'BM',
+      linkedinUrl: 'https://linkedin.com/in/ananyarao', knownBy: null,
+      verifiedBy: 'domain', status: 'verified', isAdmin: false,
+      requestedAt: days(200), decidedAt: days(200), decidedById: null,
+      decisionNote: 'Institute address — verified instantly, no reviewer needed.',
     },
-    // A rejected case, eligible for the one appeal §6 allows.
     {
-      id: 'case_fill_185_rejected',
-      memberId: 'm_fill_185',
-      tier: 'B',
-      evidence: evidenceFor(fillerMembers[185]),
-      decision: 'rejected',
-      reviewerId: admin.id,
-      decidedAt: now - 10 * DAY_MS,
-      notes: 'LinkedIn education entry could not be corroborated against batch records.',
-      isAppeal: false,
-      submittedAt: now - 15 * DAY_MS,
+      id: 'm_rohit', googleSub: 'g_rohit', email: 'rohit.mehta@gmail.com',
+      name: 'Rohit Mehta', batch: 2016, programme: 'HRM',
+      linkedinUrl: 'https://linkedin.com/in/rohitmehta', knownBy: 'Meera Iyer',
+      verifiedBy: 'admin', status: 'verified', isAdmin: false,
+      requestedAt: days(181), decidedAt: days(180), decidedById: 'm_admin',
+      decisionNote: 'LinkedIn education entry matches batch records.',
     },
-    // Tier C via vouching (§6), once the network clears the unlock threshold.
     {
-      id: 'case_fill_200_tierc',
-      memberId: 'm_fill_200',
-      tier: 'C',
-      evidence: evidenceFor(fillerMembers[200]),
-      decision: 'approved',
-      reviewerId: admin.id,
-      decidedAt: now - 5 * DAY_MS,
-      notes: 'Two vouches received; no LinkedIn record to check against.',
-      isAppeal: false,
-      submittedAt: now - 6 * DAY_MS,
+      id: 'm_meera', googleSub: 'g_meera', email: 'meera.iyer@foodhak.com',
+      name: 'Meera Iyer', batch: 2014, programme: 'BM',
+      linkedinUrl: 'https://linkedin.com/in/meeraiyer', knownBy: 'Partho Sen',
+      verifiedBy: 'admin', status: 'verified', isAdmin: false,
+      requestedAt: days(171), decidedAt: days(170), decidedById: 'm_admin',
+      decisionNote: 'LinkedIn education entry matches batch records.',
+    },
+    {
+      id: 'm_partho', googleSub: 'g_partho', email: 'partho.sen@outlook.com',
+      name: 'Partho Sen', batch: 2012, programme: 'PGDM (GM)',
+      linkedinUrl: 'https://linkedin.com/in/parthosen', knownBy: null,
+      verifiedBy: 'admin', status: 'verified', isAdmin: false,
+      requestedAt: days(161), decidedAt: days(160), decidedById: 'm_admin',
+      decisionNote: 'LinkedIn education entry matches batch records.',
+    },
+    {
+      id: 'm_karan', googleSub: 'g_karan', email: 'karan.shah@gmail.com',
+      name: 'Karan Shah', batch: 2018, programme: 'BM',
+      linkedinUrl: 'https://linkedin.com/in/karanshah', knownBy: 'Ananya Rao',
+      verifiedBy: 'admin', status: 'verified', isAdmin: false,
+      requestedAt: days(151), decidedAt: days(150), decidedById: 'm_admin',
+      decisionNote: 'LinkedIn education entry matches batch records.',
+    },
+    {
+      id: 'm_admin', googleSub: 'g_admin', email: 'alumni.office@astra.xlri.ac.in',
+      name: 'Alumni Office', batch: 2009, programme: 'GMP',
+      linkedinUrl: 'https://linkedin.com/company/xlri', knownBy: null,
+      verifiedBy: 'domain', status: 'verified', isAdmin: true,
+      requestedAt: days(300), decidedAt: days(300), decidedById: null,
+      decisionNote: 'Staff account.',
+    },
+    // The one case waiting in the admin queue — full evidence, undecided.
+    {
+      id: 'm_devika', googleSub: 'g_devika', email: 'devika.nair@gmail.com',
+      name: 'Devika Nair', batch: 2019, programme: 'HRM',
+      linkedinUrl: 'https://linkedin.com/in/devikanair', knownBy: 'Rohit Mehta',
+      verifiedBy: null, status: 'pending', isAdmin: false,
+      requestedAt: days(2), decidedAt: null, decidedById: null, decisionNote: '',
+    },
+    // A refusal, with the reason recorded — §3 says every decision carries one.
+    {
+      id: 'm_vikram', googleSub: 'g_vikram', email: 'recruiter.reach@outlook.com',
+      name: 'Vikram Bose', batch: 2015, programme: 'Other',
+      linkedinUrl: 'https://linkedin.com/in/vikrambose', knownBy: null,
+      verifiedBy: null, status: 'rejected', isAdmin: false,
+      requestedAt: days(13), decidedAt: days(12), decidedById: 'm_admin',
+      decisionNote: 'No XLRI education entry on the LinkedIn profile provided.',
     },
   ];
 
-  const vouches: Vouch[] = [
-    { id: 'v_1', caseId: 'case_fill_200_tierc', voucherId: 'm_fill_201', at: now - 7 * DAY_MS },
-    { id: 'v_2', caseId: 'case_fill_200_tierc', voucherId: 'm_fill_202', at: now - 6 * DAY_MS },
+  // -------------------------------------------------------------------------
+  // Posts — §5.0's five real messages, parsed, with the four hand-filled fields.
+  //
+  // All four connection values appear, so the board demonstrates its ranking.
+  // One post is 34 days old so the greying is visible; one was posted today.
+  // -------------------------------------------------------------------------
+  const posts: JobPost[] = [
+    postFromMessage(MSG_1_CONFIDENTIAL_STARTUP, {
+      id: 'p_impact', posterId: 'm_rohit',
+      title: 'Associate Director – People & Culture',
+      function: 'HR', connection: 'works_here',
+      isConfidential: true, confidentialDescriptor: 'Impact-tech startup, ₹300Cr revenue, marquee investors',
+      note: 'Happy to flag your profile internally once you have applied.',
+      postedAt: days(12),
+    }),
+    postFromMessage(MSG_2_PHONE_ROUTE, {
+      id: 'p_insurer', posterId: 'm_partho',
+      title: 'Strategy Manager',
+      function: 'Strategy & Consulting', connection: 'knows_contact', contactName: 'Nikita',
+      isConfidential: true, confidentialDescriptor: 'Mumbai-based MNC insurer',
+      postedAt: days(6),
+    }),
+    postFromMessage(MSG_3_SEARCH_FIRM, {
+      id: 'p_cbo', posterId: 'm_karan',
+      title: 'Chief Business Officer',
+      function: 'General Management', connection: 'forwarded',
+      isConfidential: true, confidentialDescriptor: 'Healthcare services and wellness organisation',
+      note: 'Came through a search firm — I have no line into this one.',
+      postedAt: days(34), postStatus: 'filled',
+    }),
+    postFromMessage(MSG_4_NAMED_COMPANY, {
+      id: 'p_foodhak', posterId: 'm_meera',
+      title: 'Brand Marketing Manager',
+      function: 'Marketing & Brand', connection: 'hiring',
+      companyName: 'FOODHAK',
+      postedAt: days(21),
+    }),
+    postFromMessage(MSG_5_CAREERS_EMAIL, {
+      id: 'p_anveshan', posterId: 'm_rohit',
+      title: 'Head of Operations',
+      function: 'Operations & Supply Chain', connection: 'works_here',
+      companyName: 'Anveshan',
+      postedAt: now,
+    }),
   ];
 
-  // -- Posts (the five §5.0 messages) ---------------------------------------
-
-  const pImpactco = buildFixturePost({
-    id: 'p_impactco',
-    posterId: rohit.id,
-    companyId: null,
-    confidentialDescriptor: 'impact-tech startup, ₹300Cr revenue',
-    raw: MSG_1_CONFIDENTIAL_STARTUP,
-    title: 'AD/Director - People & Culture',
-    posterRelationship: 'internal_can_refer',
-    hiringContactName: null,
-    functionLabel: 'People & Culture',
-    postedAt: now - 6 * DAY_MS,
-    lastConfirmedAt: now - 6 * DAY_MS,
-  });
-
-  const pMncInsurer = buildFixturePost({
-    id: 'p_mnc_insurer',
-    posterId: partho.id,
-    companyId: null,
-    confidentialDescriptor: 'Mumbai-based MNC insurer',
-    raw: MSG_2_PHONE_ROUTE,
-    // The parser's literal title ("for a Strategy role with a Mumbai-based
-    // MNC insurer.") is a sentence fragment lifted verbatim from the WhatsApp
-    // forward — exactly the raw parser guess §9's human-confirmation step
-    // exists to catch before a post publishes. This is what a poster would
-    // actually have typed.
-    title: 'Strategy Manager',
-    posterRelationship: 'knows_contact',
-    hiringContactName: 'Nikita',
-    functionLabel: 'Strategy',
-    postedAt: now - 10 * DAY_MS,
-    lastConfirmedAt: now - 3 * DAY_MS,
-  });
-
-  const pSearchfirm = buildFixturePost({
-    id: 'p_searchfirm',
-    posterId: partho.id,
-    companyId: null,
-    confidentialDescriptor: 'healthcare services / wellness',
-    raw: MSG_3_SEARCH_FIRM,
-    title: 'CHIEF BUSINESS OFFICER',
-    posterRelationship: 'forwarded',
-    hiringContactName: null,
-    functionLabel: 'Executive Search',
-    postedAt: now - 20 * DAY_MS,
-    lastConfirmedAt: now - 15 * DAY_MS,
-  });
-
-  const pFoodhak = buildFixturePost({
-    id: 'p_foodhak',
-    posterId: meera.id,
-    companyId: 'c_foodhak',
-    confidentialDescriptor: null,
-    raw: MSG_4_NAMED_COMPANY,
-    title: 'Brand Marketing Manager',
-    posterRelationship: 'hiring_manager',
-    hiringContactName: 'Meera Iyer',
-    functionLabel: 'Marketing',
-    postedAt: now - 2 * DAY_MS,
-    lastConfirmedAt: now - 2 * DAY_MS,
-  });
-
-  const pAnveshan = buildFixturePost({
-    id: 'p_anveshan',
-    posterId: 'm_fill_100',
-    companyId: 'c_anveshan',
-    confidentialDescriptor: null,
-    raw: MSG_5_CAREERS_EMAIL,
-    title: 'Head of Operations',
-    posterRelationship: 'forwarded',
-    hiringContactName: null,
-    functionLabel: 'Operations',
-    postedAt: now - 40 * DAY_MS,
-    // Stale: last confirmed 35 days ago, past the 30-day freshness window.
-    lastConfirmedAt: now - 35 * DAY_MS,
-  });
-
-  // A sixth post, posted within the last 24 hours, so D17's WhatsApp digest
-  // (which only ever looks at "today") has something to name (requirement 9).
-  // Not one of §5.0's five — those are fixed at their own ages above — but run
-  // through the same real parser, from a Nykaa employee sharing their own
-  // company's opening.
-  const pNykaa = buildFixturePost({
-    id: 'p_nykaa',
-    posterId: 'm_fill_25',
-    companyId: 'c_nykaa',
-    confidentialDescriptor: null,
-    raw: 'Nykaa is hiring a Growth Marketing Associate!\n\nLocation: Mumbai\nExperience: 2-4 years\n\nApply here: https://nykaa.com/careers/growth-marketing-associate',
-    title: 'Growth Marketing Associate',
-    posterRelationship: 'internal_can_refer',
-    hiringContactName: null,
-    functionLabel: 'Marketing',
-    postedAt: now - 3 * 60 * 60 * 1000,
-    lastConfirmedAt: now - 3 * 60 * 60 * 1000,
-  });
-
-  const posts: JobPost[] = [pImpactco, pMncInsurer, pSearchfirm, pFoodhak, pAnveshan, pNykaa];
-
-  // -- The visible duplicate (§5.1): another alum shares message 5's post ---
-
-  const shares: PostShare[] = [
-    { id: 'ps_1', jobPostId: pAnveshan.id, sharerId: 'm_fill_101', at: now - 32 * DAY_MS },
+  // -------------------------------------------------------------------------
+  // Applications — Ananya's three span the ladder (one stale, one mid, one
+  // terminal), and Meera's post carries four so "My posts" has a row worth
+  // expanding.
+  // -------------------------------------------------------------------------
+  const applications: Application[] = [
+    {
+      id: 'a_1', jobPostId: 'p_foodhak', memberId: 'm_ananya',
+      appliedAt: days(20), status: 'yet_to_respond', statusUpdatedAt: days(20),
+    },
+    {
+      id: 'a_2', jobPostId: 'p_impact', memberId: 'm_ananya',
+      appliedAt: days(11), status: 'interview_scheduled', statusUpdatedAt: days(3),
+    },
+    {
+      id: 'a_3', jobPostId: 'p_cbo', memberId: 'm_ananya',
+      appliedAt: days(30), status: 'rejected', statusUpdatedAt: days(5),
+    },
+    {
+      id: 'a_4', jobPostId: 'p_foodhak', memberId: 'm_rohit',
+      appliedAt: days(19), status: 'in_review', statusUpdatedAt: days(9),
+    },
+    {
+      id: 'a_5', jobPostId: 'p_foodhak', memberId: 'm_partho',
+      appliedAt: days(18), status: 'awaiting_next_round', statusUpdatedAt: days(2),
+    },
+    {
+      id: 'a_6', jobPostId: 'p_foodhak', memberId: 'm_karan',
+      appliedAt: days(17), status: 'no_response', statusUpdatedAt: days(6),
+    },
   ];
 
-  // -- Applications (§8) -----------------------------------------------------
-
-  const applications: PostApplication[] = [
-    { id: 'app_1', jobPostId: pFoodhak.id, memberId: 'm_fill_150', appliedAt: now - 2 * DAY_MS, outcome: 'responded', outcomeAt: now - 1 * DAY_MS, promptedAt: null },
-    { id: 'app_2', jobPostId: pFoodhak.id, memberId: 'm_fill_151', appliedAt: now - 2 * DAY_MS, outcome: 'interviewing', outcomeAt: now - 1 * DAY_MS, promptedAt: null },
-    { id: 'app_3', jobPostId: pFoodhak.id, memberId: 'm_fill_152', appliedAt: now - 2 * DAY_MS, outcome: 'offer', outcomeAt: now, promptedAt: null },
-    { id: 'app_4', jobPostId: pImpactco.id, memberId: 'm_fill_153', appliedAt: now - 5 * DAY_MS, outcome: 'no_response', outcomeAt: null, promptedAt: now - 1 * DAY_MS },
-    { id: 'app_5', jobPostId: pImpactco.id, memberId: 'm_fill_154', appliedAt: now - 5 * DAY_MS, outcome: 'rejected', outcomeAt: now - 2 * DAY_MS, promptedAt: null },
-    { id: 'app_6', jobPostId: pMncInsurer.id, memberId: 'm_fill_155', appliedAt: now - 8 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: null },
-    { id: 'app_7', jobPostId: pSearchfirm.id, memberId: 'm_fill_156', appliedAt: now - 18 * DAY_MS, outcome: 'rejected', outcomeAt: now - 10 * DAY_MS, promptedAt: null },
-    // The stale Anveshan post: every applicant reads "outcomes unknown".
-    { id: 'app_8', jobPostId: pAnveshan.id, memberId: 'm_fill_157', appliedAt: now - 38 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: now - 20 * DAY_MS },
-    { id: 'app_9', jobPostId: pAnveshan.id, memberId: 'm_fill_158', appliedAt: now - 37 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: now - 20 * DAY_MS },
-    { id: 'app_10', jobPostId: pAnveshan.id, memberId: 'm_fill_159', appliedAt: now - 36 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: now - 20 * DAY_MS },
-    // Ananya's own unanswered apply prompt, at least 14 days old (Task 22's
-    // ruling): without this, the tracker's `application` row kind is
-    // reachable from no persona at all, and §10's central claim — an overdue
-    // referral request and an unanswered apply prompt render identically —
-    // can never actually be seen.
-    { id: 'app_11', jobPostId: pAnveshan.id, memberId: ananya.id, appliedAt: now - 16 * DAY_MS, outcome: 'unknown', outcomeAt: null, promptedAt: null },
+  // -------------------------------------------------------------------------
+  // Notifications — one read and one unread for the current member, so the
+  // bell count is a real number rather than all-or-nothing, plus one waiting
+  // for the poster who has applicants.
+  // -------------------------------------------------------------------------
+  const notifications: Notification[] = [
+    {
+      id: 'n_1', memberId: 'm_ananya', kind: 'you_were_verified',
+      body: notificationBody('you_were_verified', {}), link: '/board',
+      readAt: days(199), pushedAt: days(200), emailedAt: null, at: days(200),
+    },
+    {
+      id: 'n_2', memberId: 'm_ananya', kind: 'post_filled',
+      body: notificationBody('post_filled', { roleTitle: 'Chief Business Officer' }),
+      link: '/applications', readAt: null, pushedAt: null, emailedAt: null, at: days(5),
+    },
+    {
+      id: 'n_3', memberId: 'm_meera', kind: 'applied_to_your_post',
+      body: notificationBody('applied_to_your_post', { actorName: 'Partho Sen', roleTitle: 'Brand Marketing Manager' }),
+      link: '/posts', readAt: null, pushedAt: null, emailedAt: null, at: days(18),
+    },
   ];
 
-  // -- Resumes ----------------------------------------------------------------
-
-  const resumes: ResumeVersion[] = [
-    { id: 'res_ananya_v1', memberId: ananya.id, filename: 'Ananya_Rao_Resume.pdf', uploadedAt: now - 40 * DAY_MS },
-  ];
-
-  // -- Reports ------------------------------------------------------------------
-
+  // §4: a report link plus an admin delete is the whole moderation story, so
+  // the queue needs something in it to be worth opening.
   const reports: Report[] = [
-    { id: 'rep_1', reporterId: 'm_fill_120', targetType: 'post', targetId: pSearchfirm.id, reason: 'Recruiter is asking for an upfront fee.', at: now - 12 * DAY_MS, resolvedAt: null },
-    { id: 'rep_2', reporterId: 'm_fill_121', targetType: 'member', targetId: 'm_fill_185', reason: 'Profile details do not match LinkedIn.', at: now - 9 * DAY_MS, resolvedAt: now - 8 * DAY_MS },
+    {
+      id: 'r_1', jobPostId: 'p_cbo', reporterId: 'm_ananya',
+      reason: 'Search firm never replied — possibly collecting CVs rather than hiring.',
+      at: days(9), resolvedAt: null,
+    },
   ];
 
   return {
     version: SCHEMA_VERSION,
-    school,
     members,
-    companies: ALL_COMPANIES,
     posts,
-    shares,
     applications,
-    cases,
-    resumes,
-    vouches,
+    notifications,
+    pushSubscriptions: [],
     reports,
-    currentMemberId: ananya.id,
+    currentMemberId: 'm_ananya',
   };
 }

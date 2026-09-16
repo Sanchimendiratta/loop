@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { getCurrentMember, listCases, listPersonas, setCurrentMember } from '../data/store.ts';
+import { getCurrentMember, listPersonas, pendingCases, setCurrentMember } from '../data/store.ts';
 import { Avatar, Select } from './primitives.tsx';
 import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
@@ -25,19 +25,18 @@ export function App() {
   const member = getCurrentMember();
   const isVerified = member?.status === 'verified';
 
-  // Every demo identity, curated down to the six named personas (§4) plus the
-  // three filler accounts seeded in non-verified states (Task 14) — dumping
-  // all ~230 filler alumni into one <select> would bury the very three the
-  // gate exists to demonstrate. `m_fill_200` is verified (Tier C), so it drops
-  // out along with the rest.
-  const personas = listPersonas().filter((p) => !p.id.startsWith('m_fill_') || p.status !== 'verified');
+  // Every demo identity. Lite's seed is 8 named personas covering all three
+  // gate states, so there is no filler roster left to curate down.
+  const personas = listPersonas();
 
-  const pendingCases = isVerified && member?.isAdmin ? listCases().filter((c) => c.decision === 'pending').length : 0;
+  // Viewer-scoped by the store: `pendingCases()` already returns [] for
+  // anyone who is not a verified admin, so this badge cannot leak a count.
+  const queueSize = pendingCases().length;
 
   const nav: NavItem[] = isVerified
     ? [
         { id: 'board', label: 'Board' },
-        ...(member?.isAdmin ? [{ id: 'admin', label: 'Admin', badge: pendingCases }] : []),
+        ...(member?.isAdmin ? [{ id: 'admin', label: 'Admin', badge: queueSize }] : []),
       ]
     : [];
 
