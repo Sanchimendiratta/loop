@@ -7,8 +7,10 @@ import { Directory } from './Directory.tsx';
 import { CompanyPage } from './CompanyPage.tsx';
 import { RequestComposer } from './RequestComposer.tsx';
 import type { ReferralAsk } from './RequestComposer.tsx';
+import { RequestDetail } from './RequestDetail.tsx';
 import { Requests } from './Requests.tsx';
 import { Shell } from './Shell.tsx';
+import { Tracker } from './Tracker.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
 import { useNow, useStoreVersion } from './useStore.ts';
@@ -29,6 +31,7 @@ export function App() {
   const now = useNow();
   const [view, setView] = useState<View>('board');
   const [openPostId, setOpenPostId] = useState<string | null>(null);
+  const [openRequestId, setOpenRequestId] = useState<string | null>(null);
   const [openCompanyId, setOpenCompanyId] = useState<string | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerAsk, setComposerAsk] = useState<ReferralAsk | null>(null);
@@ -112,7 +115,9 @@ export function App() {
         <VerificationGate>
           <Shell nav={nav} active={view} onNavigate={handleNavigate}>
             {view === 'board' ? <Board now={now} onOpenPost={setOpenPostId} /> : null}
-            {view === 'tracker' ? <Placeholder label="Tracker" /> : null}
+            {view === 'tracker' ? (
+              <Tracker now={now} onOpenRequest={setOpenRequestId} onOpenPost={setOpenPostId} />
+            ) : null}
             {view === 'directory' ? (
               openCompanyId ? (
                 <CompanyPage
@@ -138,6 +143,10 @@ export function App() {
           onClose={() => setOpenPostId(null)}
           onRequestReferral={handleRequestReferral}
         />
+      ) : null}
+
+      {openRequestId ? (
+        <RequestDetail requestId={openRequestId} now={now} onClose={() => setOpenRequestId(null)} />
       ) : null}
 
       <RequestComposer
