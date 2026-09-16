@@ -62,6 +62,8 @@ export interface FormState {
   location: string;
   locationSource: string | null;
   isRemote: boolean;
+  /** Whether `isRemote`'s current value came from a parse rather than the poster. */
+  isRemoteFromPaste: boolean;
   expMin: string;
   expMax: string;
   expSource: string | null;
@@ -91,6 +93,7 @@ export const EMPTY_FORM: FormState = {
   location: '',
   locationSource: null,
   isRemote: false,
+  isRemoteFromPaste: false,
   expMin: '',
   expMax: '',
   expSource: null,
@@ -146,6 +149,9 @@ export function editField<K extends keyof FormState>(f: FormState, key: K, value
   const next = { ...f, [key]: value };
   const sourceKey = SOURCE_KEY_FOR_FIELD[key];
   if (sourceKey) next[sourceKey] = null;
+  // `isRemote` has no `*Source` string to null, so it records ownership as a
+  // flag instead. Ticking the box by hand makes the value the poster's.
+  if (key === 'isRemote') next.isRemoteFromPaste = false;
   return next;
 }
 
@@ -186,23 +192,36 @@ export function mergeParsedIntoForm(f: FormState, text: string, parsed: ParsedPo
     next.companySource = null;
   }
 
-  // `isRemote` has no source field of its own, so it borrows `locationSource`
-  // as its provenance: the two are only ever written together. A ticked box
-  // that came from an earlier paste is that paste's guess and must not survive
-  // a newer one — otherwise pasting a Remote role and then an onsite Mumbai
-  // role publishes Mumbai marked Remote, which is a wrong fact on the board and
-  // far easier to miss than a wrong value in a text field. A box the POSTER
-  // ticked carries no `locationSource` (`editField` nulls it) and is preserved.
+  // `isRemote` carries its own provenance flag rather than borrowing
+  // `locationSource`. An earlier version borrowed it on the reasoning that the
+  // two are "only ever written together" — true of parses, false of hand edits:
+  // the checkbox writes `isRemote` alone, so a poster who ticked Remote by hand
+  // still had `locationSource` set from an earlier paste, and the next paste
+  // wiped their tick. `isRemoteFromPaste` distinguishes the two cases directly
+  // instead of inferring one from the other.
+  //
+  // A tick that came from a parse does not outlive that parse: otherwise a
+  // Remote role followed by an onsite Mumbai role publishes Mumbai marked
+  // Remote, and a wrong tick is far easier to miss than wrong text.
   if (parsed.locations.value?.length) {
     const remote = parsed.locations.value.includes('Remote');
     const rest = parsed.locations.value.filter((l) => l !== 'Remote');
     next.location = rest.join(', ');
-    next.isRemote = remote || (f.locationSource ? false : f.isRemote);
     next.locationSource = parsed.locations.source;
+    if (remote) {
+      next.isRemote = true;
+      next.isRemoteFromPaste = true;
+    } else if (f.isRemoteFromPaste) {
+      next.isRemote = false;
+      next.isRemoteFromPaste = false;
+    }
   } else if (f.locationSource) {
     next.location = '';
     next.locationSource = null;
-    next.isRemote = false;
+    if (f.isRemoteFromPaste) {
+      next.isRemote = false;
+      next.isRemoteFromPaste = false;
+    }
   }
 
   if (parsed.experience.value) {

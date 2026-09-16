@@ -129,14 +129,48 @@ describe('isRemote provenance', () => {
     expect(afterOnsite.isRemote).toBe(false);
   });
 
-  test('a Remote tick the POSTER set by hand survives a later paste', () => {
-    // editField nulls locationSource, which is what marks the value as the
-    // poster's rather than a parse's.
-    const handTicked = editField(EMPTY_FORM, 'isRemote', true);
-    expect(handTicked.locationSource).toBeNull();
+  /**
+   * The case the first version of this test could not reach.
+   *
+   * It started from EMPTY_FORM, where `locationSource` is trivially null, so it
+   * passed under the unsound `locationSource`-borrow too. The sequence that
+   * actually breaks the borrow is paste -> hand-tick -> paste: the first paste
+   * sets `locationSource`, the hand tick does NOT clear it (the checkbox writes
+   * `isRemote` alone), so the second paste read the poster's own tick as a stale
+   * parse and wiped it. Found in re-review of the borrow.
+   */
+  test('a Remote tick the POSTER set after a paste survives the NEXT paste', () => {
+    const afterOnsite = mergeParsedIntoForm(EMPTY_FORM, ONSITE_ROLE, parsePost(ONSITE_ROLE));
+    expect(afterOnsite.isRemote).toBe(false);
+    expect(afterOnsite.locationSource).not.toBeNull(); // the borrow's trap
 
+    // The poster knows the role is remote even though the text never said so.
+    const handTicked = editField(afterOnsite, 'isRemote', true);
+    expect(handTicked.isRemote).toBe(true);
+    expect(handTicked.isRemoteFromPaste).toBe(false);
+
+    // A later paste that resolves a non-remote location must not overrule them.
+    const afterSecond = mergeParsedIntoForm(handTicked, ONSITE_ROLE, parsePost(ONSITE_ROLE));
+    expect(afterSecond.isRemote).toBe(true);
+  });
+
+  test('a Remote tick set by hand before any paste also survives', () => {
+    const handTicked = editField(EMPTY_FORM, 'isRemote', true);
     const afterPaste = mergeParsedIntoForm(handTicked, ONSITE_ROLE, parsePost(ONSITE_ROLE));
     expect(afterPaste.isRemote).toBe(true);
+  });
+
+  test('a poster who UNTICKS a parsed Remote is not overruled by a later paste', () => {
+    const afterRemote = mergeParsedIntoForm(EMPTY_FORM, REMOTE_ROLE, parsePost(REMOTE_ROLE));
+    expect(afterRemote.isRemoteFromPaste).toBe(true);
+
+    const handUnticked = editField(afterRemote, 'isRemote', false);
+    expect(handUnticked.isRemoteFromPaste).toBe(false);
+
+    const afterSecond = mergeParsedIntoForm(handUnticked, REMOTE_ROLE, parsePost(REMOTE_ROLE));
+    // This one SHOULD re-tick: the new paste itself says Remote, which is a
+    // fresh claim rather than a stale one.
+    expect(afterSecond.isRemote).toBe(true);
   });
 
   test('a paste that finds no location at all clears a previously parsed Remote tick', () => {
