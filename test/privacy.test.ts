@@ -82,4 +82,45 @@ describe('privacy (D2, D6)', () => {
     expect(canSeeContactDetails(member({ status: 'pending' }))).toBe(false);
     expect(canSeeContactDetails(null)).toBe(false);
   });
+
+  test('a rejected member sees nothing', () => {
+    const u = member({ status: 'rejected', tier: null });
+    expect(canSeeNetwork(u)).toBe(false);
+    expect(visibleMembers(u, [member({ id: 'm2' })])).toEqual([]);
+  });
+
+  test('a suspended admin still fails canSeeMember and canSeeContactDetails', () => {
+    const suspended = member({ status: 'suspended', isAdmin: true });
+    const target = member({ id: 'm2' });
+    expect(canSeeMember(suspended, target)).toBe(false);
+    expect(canSeeContactDetails(suspended)).toBe(false);
+  });
+
+  test('canSeeMember(null, target) is false', () => {
+    expect(canSeeMember(null, member())).toBe(false);
+  });
+
+  test('a viewer with null companyId is not blocked by blockedCompanyIds', () => {
+    const viewer = member({ id: 'm2', companyId: null });
+    const blocker = member({ id: 'm1', privacy: { confidentialSearch: true, blockedCompanyIds: ['c9'], blockedMemberIds: [] } });
+    expect(canSeeMember(viewer, blocker)).toBe(true);
+  });
+
+  test('an admin in blockedMemberIds cannot see that member', () => {
+    const admin = member({ id: 'm9', isAdmin: true });
+    const blocker = member({ id: 'm1', privacy: { confidentialSearch: true, blockedCompanyIds: [], blockedMemberIds: ['m9'] } });
+    expect(canSeeMember(admin, blocker)).toBe(false);
+  });
+
+  test('an admin whose companyId is in blockedCompanyIds cannot see that member', () => {
+    const admin = member({ id: 'm9', isAdmin: true, companyId: 'c9' });
+    const blocker = member({ id: 'm1', privacy: { confidentialSearch: true, blockedCompanyIds: ['c9'], blockedMemberIds: [] } });
+    expect(canSeeMember(admin, blocker)).toBe(false);
+  });
+
+  test('an admin can read a request they are not party to', () => {
+    const admin = member({ id: 'm9', isAdmin: true });
+    const r = request({ seekerId: 'm1', referrerId: 'm2' });
+    expect(canSeeRequest(admin, r)).toBe(true);
+  });
 });

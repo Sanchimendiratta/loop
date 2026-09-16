@@ -26,7 +26,11 @@ export function canSeeNetwork(m: Member | null): boolean {
 export function canSeeMember(viewer: Member | null, target: Member): boolean {
   if (!canSeeNetwork(viewer)) return false;
   if (viewer!.id === target.id) return true;
-  if (viewer!.isAdmin) return true;
+  // A seeker's block binds every viewer, admins included. §8 grants the control
+  // without exception, and the sharp case is a seeker blocking a manager who
+  // also holds an admin seat. Admin moderation does not route through profile
+  // visibility: it reads verification cases and reports, where the member
+  // either submitted the evidence themselves or is named in a report.
   if (target.privacy.blockedMemberIds.includes(viewer!.id)) return false;
   if (viewer!.companyId && target.privacy.blockedCompanyIds.includes(viewer!.companyId)) return false;
   return true;
