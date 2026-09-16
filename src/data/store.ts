@@ -27,6 +27,7 @@ import type {
   PostShare,
   PosterRelationship,
   PrivacySettings,
+  PublicMember,
   ReferralRequest,
   Report,
   RequestEvent,
@@ -217,6 +218,20 @@ export function reset(now: number = Date.now()): AppState {
   return state;
 }
 
+/**
+ * The whole workspace, unscoped. TEST-ONLY.
+ *
+ * This is the one function in this file that answers without asking who is
+ * looking. It exists so the test suite can place a fixture and then check what
+ * a scoped read did or did not return — which is impossible if the only way in
+ * is already filtered.
+ *
+ * NO module under `src/ui/` may call it. It bypasses every viewer scope in
+ * this file at once: `getState().members` hands a component the blocked-company
+ * list that `toPublicMember` exists to strip, and `getState().requests` hands
+ * it every private 1:1 request in the network. A screen that needs different
+ * data needs a new store function, not this. Task 25 greps `src/ui/` for it.
+ */
 export function getState(): AppState {
   if (!state) load();
   return state as AppState;
@@ -281,6 +296,29 @@ function requireViewer(): Member {
 // Reads — all viewer-scoped
 // ---------------------------------------------------------------------------
 
+/**
+ * Field scoping, which is a different job from row scoping.
+ *
+ * Deciding WHICH members a viewer sees does not help if every row they do see
+ * carries `privacy.blockedCompanyIds` — reading that Karan blocked his own
+ * employer discloses that he is job-searching, the exact fact D6 exists to
+ * protect. `googleSub` is an auth credential, `caps` is a referrer's private
+ * intake setting, and an email address is a member's to give out. All four come
+ * off on the way out, and the return TYPE is the enforcement: a screen cannot
+ * render a blocked list it was never handed.
+ *
+ * No admin exception. The admin console reads `listCases`, which carries its
+ * own evidence, and `getCurrentMember()` still returns the full `Member` —
+ * that one is you.
+ */
+function toPublicMember(viewer: Member, m: Member): PublicMember {
+  const { googleSub, privacy, caps, email, ...rest } = m;
+  void googleSub;
+  void privacy;
+  void caps;
+  return { ...rest, email: viewer.id === m.id ? email : null };
+}
+
 /** A post whose poster is invisible to the viewer is invisible too: a blocked
  * member must not be discoverable via their own posts (§6/D6). */
 function postsVisibleTo(viewer: Member, s: AppState): JobPost[] {
@@ -308,18 +346,18 @@ export function getPost(id: string): JobPost | null {
  * still a row an admin console and a moderation view need to render. Screens
  * wanting "alumni you could ask" want `alumniAt`.
  */
-export function listMembers(): Member[] {
+export function listMembers(): PublicMember[] {
   const viewer = viewerOrNull();
   if (!viewer) return [];
-  return visibleMembers(viewer, getState().members);
+  return visibleMembers(viewer, getState().members).map((m) => toPublicMember(viewer, m));
 }
 
-export function getMember(id: string): Member | null {
+export function getMember(id: string): PublicMember | null {
   const viewer = viewerOrNull();
   if (!viewer) return null;
   const target = getState().members.find((m) => m.id === id);
   if (!target) return null;
-  return canSeeMember(viewer, target) ? target : null;
+  return canSeeMember(viewer, target) ? toPublicMember(viewer, target) : null;
 }
 
 export function listCompanies(): Company[] {
@@ -329,12 +367,12 @@ export function listCompanies(): Company[] {
 }
 
 /** Verified, visible alumni at one company — the referrer picker's source. */
-export function alumniAt(companyId: string): Member[] {
+export function alumniAt(companyId: string): PublicMember[] {
   const viewer = viewerOrNull();
   if (!viewer) return [];
-  return visibleMembers(viewer, getState().members).filter(
-    (m) => m.companyId === companyId && m.status === 'verified',
-  );
+  return visibleMembers(viewer, getState().members)
+    .filter((m) => m.companyId === companyId && m.status === 'verified')
+    .map((m) => toPublicMember(viewer, m));
 }
 
 export function listRequests(): ReferralRequest[] {
@@ -907,6 +945,7 @@ export function reportTarget(type: 'post' | 'member', id: string, reason: string
  */
 export function runClock(now: number): void {
   const s = getState();
+  let changed = false;
 
   const requests: ReferralRequest[] = [];
   for (const request of s.requests) {
@@ -915,31 +954,60 @@ export function runClock(now: number): void {
       const next = applyTransition(request, to, 'system', now);
       appendEvent(request.id, null, request.state, to, `Auto-advanced to ${to}.`, now);
       requests.push(next);
+      changed = true;
       continue;
     }
     // Nudges are what make `autoAdvanceFor`'s no-response branch reachable, so
     // the clock has to send them. Exactly one person is nudged: whoever
     // `stateOwner` says owes the next update (§5.2).
     const nudge = nudgeDueFor(request, now);
-    if (nudge.due && !isTerminal(request.state)) {
-      requests.push({ ...request, nudgeCount: request.nudgeCount + 1, lastNudgedAt: now });
+    // At most one nudge per request per day, however far behind the schedule we are.
+    // Without this a stale request catches up its whole nudge sequence in successive
+    // minute-ticks rather than over days.
+    const nudgeAllowedToday = request.lastNudgedAt === null || daysBetween(request.lastNudgedAt, now) >= 1;
+    if (nudge.due && nudgeAllowedToday && !isTerminal(request.state)) {
+      const nudgeNumber = request.nudgeCount + 1;
+      // The timeline has to show the chasing, or a member's history jumps
+      // straight from `submitted` to `no_response` with nothing in between and
+      // the auto-advance looks arbitrary. A nudge is not a transition, so
+      // `fromState` and `toState` are both the state it was sent about.
+      appendEvent(
+        request.id,
+        null,
+        request.state,
+        request.state,
+        `Nudge ${nudgeNumber} sent to the ${nudge.target ?? 'owner'}.`,
+        now,
+      );
+      requests.push({ ...request, nudgeCount: nudgeNumber, lastNudgedAt: now });
+      changed = true;
       continue;
     }
     requests.push(request);
   }
-  s.requests = requests;
+  if (changed) s.requests = requests;
 
-  s.posts = s.posts.map((post) => {
+  let postsChanged = false;
+  const posts = s.posts.map((post) => {
     if (post.archivedAt !== null) return post;
-    return freshnessFor(post, now).shouldArchive ? { ...post, archivedAt: now } : post;
+    if (!freshnessFor(post, now).shouldArchive) return post;
+    postsChanged = true;
+    return { ...post, archivedAt: now };
   });
+  if (postsChanged) {
+    s.posts = posts;
+    changed = true;
+  }
 
   // Note what is NOT here: application prompts. `applicationPromptDue` goes
   // false once `promptedAt` is stamped, so stamping it from the clock would
   // silently drop the row off the applicant's tracker before they answered.
   // `recordOutcome` stamps it — when the member has actually replied.
 
-  commit();
+  // A tick that changed nothing must not commit. The UI runs this every 60
+  // seconds, and committing regardless would hand React fresh array identities
+  // sixty times a minute and re-render the whole app for no reason.
+  if (changed) commit();
 }
 
 // ---------------------------------------------------------------------------

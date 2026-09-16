@@ -69,6 +69,19 @@ export interface Member {
   joinedAt: number;
 }
 
+/**
+ * What a member read returns to anyone but the member themselves.
+ *
+ * A full Member carries privacy.blockedCompanyIds, so returning it would let
+ * any verified member read who a seeker is hiding from — which discloses that
+ * they are searching. The type is the enforcement: a screen cannot render a
+ * blocked list it was never handed.
+ */
+export type PublicMember = Omit<Member, 'googleSub' | 'privacy' | 'caps' | 'email'> & {
+  /** Present only for the viewer's own record; null for everyone else. */
+  email: string | null;
+};
+
 export interface VerificationCase {
   id: string;
   memberId: string;

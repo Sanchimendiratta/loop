@@ -27,7 +27,10 @@ describe('rule 1 — the privacy filter (spec §4.1)', () => {
   });
 
   test('a member who blocked a company is invisible to that company’s employees', () => {
-    const karan = store.listMembers().find((m) => m.name.startsWith('Karan'))!;
+    // Setup only, and it has to come from the raw workspace now: `privacy` no
+    // longer rides along on a member read (see the PublicMember test below),
+    // which is the point. The assertion below is unchanged.
+    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
     const blockedCompany = karan.privacy.blockedCompanyIds[0];
     const employee = store.listMembers().find((m) => m.companyId === blockedCompany && m.id !== karan.id)!;
     store.setCurrentMember(employee.id);
@@ -196,5 +199,153 @@ describe('the WhatsApp digest (D17)', () => {
     for (const line of digest.split('\n').filter(Boolean).slice(1)) {
       expect(line).toContain('/post/');
     }
+  });
+});
+
+describe('field scoping — a row the viewer may see still withholds fields (D6)', () => {
+  test('a member read carries no blocked list, no googleSub, no caps and no third-party email', () => {
+    const karanRaw = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    store.setCurrentMember(ananya.id);
+
+    const karan = store.listMembers().find((m) => m.id === karanRaw.id)!;
+    expect(karan).toBeDefined();
+    // Reading who a seeker hides from discloses that they are searching.
+    expect('privacy' in karan).toBe(false);
+    expect('googleSub' in karan).toBe(false);
+    expect('caps' in karan).toBe(false);
+    expect(karan.email).toBeNull();
+    expect(JSON.stringify(karan)).not.toContain(karanRaw.email);
+    expect(JSON.stringify(karan)).not.toContain(karanRaw.googleSub);
+
+    // The same holds for the single-member read and the referrer picker.
+    expect('privacy' in store.getMember(karanRaw.id)!).toBe(false);
+    for (const m of store.alumniAt('c_foodhak')) expect('privacy' in m).toBe(false);
+
+    // Your own record still gives you your own address — it is yours.
+    expect(store.getMember(ananya.id)!.email).toBe(ananya.email);
+    expect(store.getCurrentMember()!.privacy.confidentialSearch).toBe(true);
+  });
+});
+
+describe('the store’s own authority rules', () => {
+  test('a third party cannot move someone else’s request — not even an admin', () => {
+    const sent = store.getState().requests.find((r) => r.state === 'sent')!;
+
+    const admin = store.getState().members.find((m) => m.isAdmin)!;
+    store.setCurrentMember(admin.id);
+    // An admin may READ a request (§4.1) but never drive one.
+    expect(store.getRequest(sent.id)).not.toBeNull();
+    expect(() => store.advanceRequest(sent.id, 'accepted')).toThrow(RuleViolation);
+
+    const stranger = store.getState().members.find(
+      (m) => m.status === 'verified' && !m.isAdmin && m.id !== sent.seekerId && m.id !== sent.referrerId,
+    )!;
+    store.setCurrentMember(stranger.id);
+    expect(() => store.advanceRequest(sent.id, 'accepted')).toThrow(RuleViolation);
+
+    expect(store.getState().requests.find((r) => r.id === sent.id)!.state).toBe('sent');
+  });
+
+  test('the verification queue is admin-only, and is not sourced through member visibility', () => {
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    const admin = store.getState().members.find((m) => m.isAdmin)!;
+    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
+
+    store.setCurrentMember(ananya.id);
+    expect(store.listCases()).toEqual([]);
+
+    // Karan blocks the admin outright. His profile must refuse to render...
+    store.setCurrentMember(karan.id);
+    store.setPrivacy({ ...karan.privacy, blockedMemberIds: [admin.id] });
+    store.setCurrentMember(admin.id);
+    expect(store.getMember(karan.id)).toBeNull();
+
+    // ...and his case must still be reviewable: he submitted the evidence
+    // himself, so it carries its own consent.
+    const cases = store.listCases();
+    expect(cases.length).toBeGreaterThan(0);
+    expect(cases.some((c) => c.decision === 'pending')).toBe(true);
+    expect(cases.some((c) => c.memberId === karan.id)).toBe(true);
+  });
+
+  test('the tracker refuses to render anyone else’s — including for an admin', () => {
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    store.setCurrentMember(ananya.id);
+    expect(store.trackerFor(ananya.id, NOW).length).toBeGreaterThan(0);
+
+    const admin = store.getState().members.find((m) => m.isAdmin)!;
+    store.setCurrentMember(admin.id);
+    expect(store.trackerFor(ananya.id, NOW)).toEqual([]);
+  });
+});
+
+describe('the clock, run repeatedly', () => {
+  test('a second tick at the same instant changes nothing and notifies nobody', () => {
+    const now = store.getState().posts[0].postedAt + 46 * 86_400_000;
+    store.runClock(now);
+    const snapshot = JSON.stringify(store.getState());
+
+    let notifications = 0;
+    const unsubscribe = store.subscribe(() => {
+      notifications += 1;
+    });
+    store.runClock(now);
+    unsubscribe();
+
+    expect(JSON.stringify(store.getState())).toBe(snapshot);
+    expect(notifications).toBe(0);
+  });
+
+  test('a nudge is at most one per day, and leaves a trace on the timeline', () => {
+    const req = store.getState().requests.find((r) => r.id === 'req_d_submitted_overdue')!;
+    const nudgesOf = (id: string) => store.getState().requests.find((r) => r.id === id)!.nudgeCount;
+    const eventsOf = (id: string) => store.getState().requestEvents.filter((e) => e.requestId === id).length;
+    const before = eventsOf(req.id);
+
+    // 46 days into `submitted`, this request is past ALL THREE of its schedule
+    // thresholds (14/30/45). Without the daily guard it catches the whole
+    // sequence up in three successive minute-ticks instead of over a month.
+    const now = req.updatedAt + 46 * 86_400_000;
+
+    store.runClock(now);
+    expect(nudgesOf(req.id)).toBe(1);
+    // The nudge is on the timeline, so the eventual auto-advance is not a
+    // history jumping from `submitted` straight to `no_response`.
+    expect(eventsOf(req.id)).toBe(before + 1);
+
+    store.runClock(now + 60_000);
+    store.runClock(now + 120_000);
+    expect(nudgesOf(req.id)).toBe(1);
+    expect(eventsOf(req.id)).toBe(before + 1);
+
+    // A day later the next one lands, and the request has not been advanced
+    // out from under its owner in the meantime.
+    store.runClock(now + 86_400_000);
+    expect(nudgesOf(req.id)).toBe(2);
+    expect(store.getState().requests.find((r) => r.id === req.id)!.state).toBe('submitted');
+  });
+});
+
+describe('publishing — what is not a merge target', () => {
+  test('a filled post is not merged into; the next forward starts a fresh card', () => {
+    const existing = store.getState().posts[4];
+    store.setCurrentMember(existing.posterId);
+    store.confirmPost(existing.id, 'filled');
+
+    const partho = store.getState().members.find((m) => m.name.startsWith('Partho'))!;
+    store.setCurrentMember(partho.id);
+    const before = store.getState().posts.length;
+    const fresh = store.publishPost({
+      rawText: 'reposted after it was filled', title: existing.title, companyId: existing.companyId,
+      confidentialDescriptor: null, locations: existing.locations, expMin: null, expMax: null,
+      compText: null, function: null, applyMethod: existing.applyMethod, applyValue: existing.applyValue,
+      jdUrl: null, posterRelationship: 'forwarded', destinationType: existing.destinationType,
+      hiringContactName: null, hiringContactValue: null, contactConsentConfirmed: true, parseConfidence: 0.7,
+    });
+
+    expect(fresh.id).not.toBe(existing.id);
+    expect(store.getState().posts.length).toBe(before + 1);
+    expect(store.getState().shares.some((s) => s.jobPostId === existing.id && s.sharerId === partho.id)).toBe(false);
   });
 });
