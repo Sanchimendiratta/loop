@@ -24,6 +24,14 @@
  * is already watching. That is genuinely all Web Push can do without a
  * server to hand a subscription to — nothing here pretends a message was
  * delivered while the member was away, because nothing was.
+ *
+ * `computeBellTransition` below is exported and DOM-free for the same reason
+ * `PostComposer.tsx` exports `editField`/`mergeParsedIntoForm`: it is the one
+ * piece of this file with a bug already found in it once (a global, non-keyed
+ * baseline let switching personas replay an existing backlog as if it had
+ * just arrived), and `scripts/smoke.mjs`'s SSR render asserts nothing about
+ * behaviour like this — only `test/bell.test.ts`, calling this function
+ * directly, does.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -98,6 +106,79 @@ function timeLabel(at: number, now: number): string {
   return d === 0 ? 'today' : `${d}d ago`;
 }
 
+// ---------------------------------------------------------------------------
+// Pure, DOM-free: the per-viewer transition. See test/bell.test.ts.
+// ---------------------------------------------------------------------------
+
+/** The only shape the transition needs from a `Notification` row. */
+export interface BellNotification {
+  id: string;
+  body: string;
+}
+
+export interface BellActionCounts {
+  applications: number;
+  posts: number;
+}
+
+interface ViewerBellState {
+  seenIds: ReadonlySet<string>;
+  actionCounts: BellActionCounts;
+}
+
+/** Keyed by viewer id. One entry per member this session has looked at through this `Bell` instance. */
+export type BellState = ReadonlyMap<string, ViewerBellState>;
+
+export const EMPTY_BELL_STATE: BellState = new Map();
+
+export interface BellTransition {
+  state: BellState;
+  /** Fire a native `Notification` for each of these — empty on a viewer's first sighting. */
+  notificationsToFire: BellNotification[];
+  /** True only when THIS viewer's own counts rose since THIS viewer's last-seen state. */
+  shouldRequestPermission: boolean;
+}
+
+/**
+ * The bug this exists to prevent: the persona switcher can hand `Bell` a
+ * different `viewerId` without unmounting it. A single shared baseline (one
+ * `Set`, one counts object, keyed by nothing) cannot tell "this viewer just
+ * did something" apart from "this is the first time I've looked at this
+ * viewer, and they already had things" — so switching to a viewer with an
+ * existing unread backlog would replay that backlog as freshly arrived, and
+ * a viewer whose own counts happen to be higher than whatever the previous
+ * viewer's were could spuriously retrigger the permission ask.
+ *
+ * Keying `state` by `viewerId` fixes both: a viewer's first transition (no
+ * entry yet) only ever seeds a baseline — `notificationsToFire` is empty and
+ * `shouldRequestPermission` is `false` unconditionally — and every later
+ * transition for that SAME viewer compares only against that viewer's own
+ * previous entry.
+ */
+export function computeBellTransition(
+  state: BellState,
+  viewerId: string,
+  notifications: readonly BellNotification[],
+  actionCounts: BellActionCounts,
+): BellTransition {
+  const prior = state.get(viewerId);
+  const notificationsToFire: BellNotification[] = [];
+  let shouldRequestPermission = false;
+
+  if (prior) {
+    for (const n of notifications) {
+      if (!prior.seenIds.has(n.id)) notificationsToFire.push(n);
+    }
+    shouldRequestPermission =
+      actionCounts.applications > prior.actionCounts.applications || actionCounts.posts > prior.actionCounts.posts;
+  }
+
+  const nextState = new Map(state);
+  nextState.set(viewerId, { seenIds: new Set(notifications.map((n) => n.id)), actionCounts });
+
+  return { state: nextState, notificationsToFire, shouldRequestPermission };
+}
+
 export function Bell({ now }: BellProps) {
   const [open, setOpen] = useState(false);
   const viewerId = getCurrentMember()?.id ?? null;
@@ -106,54 +187,33 @@ export function Bell({ now }: BellProps) {
   const applications = myApplications(now);
   const posts = myPosts();
 
-  // Keyed per viewer, not once globally: the persona switcher lets one
-  // browser tab stand in for several different members without a reload, and
-  // this component never unmounts across that switch. Without a per-viewer
-  // key, the first look at a persona this session would treat their whole
-  // existing backlog — real unread items they already had, or an application
-  // count already above zero — as something that "just happened", which is
-  // exactly the kind of fake-looking event this task's report says not to
-  // produce.
-  const seenIdsByViewer = useRef<Map<string, Set<string>>>(new Map());
-  const actionCountsByViewer = useRef<Map<string, { applications: number; posts: number }>>(new Map());
+  const bellState = useRef<BellState>(EMPTY_BELL_STATE);
 
-  // In-session native notifications: only for items that were not there the
-  // last time this viewer's list was read. The first time a given viewer is
-  // seen this session, this only records the backlog as "already seen" — no
-  // popups — so switching personas never re-announces history as new.
+  // Runs `computeBellTransition` on every change to this viewer's inputs,
+  // then acts on its (already-decided) verdict: which notifications should
+  // pop, and whether this is the moment to ask for permission. `Bell` itself
+  // holds no logic about backlogs, baselines or "first sighting" — that all
+  // lives in the pure function above, where it can be tested without a DOM.
   useEffect(() => {
     if (!viewerId) return;
-    const ids = new Set(notifications.map((n) => n.id));
-    const seen = seenIdsByViewer.current.get(viewerId);
-    if (seen && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      for (const n of notifications) {
-        if (!seen.has(n.id)) new Notification('Loop', { body: n.body });
-      }
+    const { state, notificationsToFire, shouldRequestPermission } = computeBellTransition(
+      bellState.current,
+      viewerId,
+      notifications,
+      { applications: applications.length, posts: posts.length },
+    );
+    bellState.current = state;
+
+    if (notificationsToFire.length > 0 && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      for (const n of notificationsToFire) new Notification('Loop', { body: n.body });
     }
-    seenIdsByViewer.current.set(viewerId, ids);
+    if (shouldRequestPermission) void requestPermissionAndSubscribe(now);
     // `notifications` is a fresh array every render (`myNotifications()` is
     // not memoised) — its length and newest id are what actually identify a
     // change, so those are what this effect keys on rather than the array
     // itself, which would otherwise fire on every unrelated re-render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewerId, notifications.length, notifications[0]?.id]);
-
-  // Permission timing: fires only when this viewer's own application or post
-  // count has just gone up — i.e. right after `applyToPost` or
-  // `publishPost` succeeded somewhere else in the tree, for this same
-  // viewer. Never on this viewer's first render this session (landing, or
-  // the first look after a persona switch), which is what keeps it off page
-  // load without also misfiring on a switch back to a persona who already
-  // had a non-zero count.
-  useEffect(() => {
-    if (!viewerId) return;
-    const prior = actionCountsByViewer.current.get(viewerId);
-    const actedJustNow =
-      prior !== undefined && (applications.length > prior.applications || posts.length > prior.posts);
-    actionCountsByViewer.current.set(viewerId, { applications: applications.length, posts: posts.length });
-    if (actedJustNow) void requestPermissionAndSubscribe(now);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewerId, applications.length, posts.length]);
+  }, [viewerId, notifications.length, notifications[0]?.id, applications.length, posts.length]);
 
   function handleOpen(): void {
     setOpen(true);
