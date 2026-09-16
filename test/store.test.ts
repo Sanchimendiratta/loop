@@ -169,6 +169,7 @@ describe('rule 2 — applicant details reach exactly one person', () => {
       'your batch and programme',
       'your LinkedIn URL',
       'the status you set',
+      'when you applied',
     ]);
   });
 });

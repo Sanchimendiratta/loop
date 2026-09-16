@@ -441,7 +441,13 @@ export function listReports(): Report[] {
 export function applyDisclosureFields(): string[] {
   const viewer = viewerOrNull();
   if (!viewer) return [];
-  return ['your name', 'your batch and programme', 'your LinkedIn URL', 'the status you set'];
+  return [
+    'your name',
+    'your batch and programme',
+    'your LinkedIn URL',
+    'the status you set',
+    'when you applied',
+  ];
 }
 
 // ---------------------------------------------------------------------------

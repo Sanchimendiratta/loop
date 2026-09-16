@@ -3,7 +3,6 @@ import {
   beginNewSignIn,
   getCurrentMember,
   listPersonas,
-  myApplications,
   myPosts,
   pendingCases,
   setCurrentMember,
@@ -12,6 +11,7 @@ import { Avatar, EmptyState, Select } from './primitives.tsx';
 import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
 import { makeGoogleIdentity } from './Login.tsx';
+import { MyApplications } from './MyApplications.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
@@ -120,30 +120,14 @@ export function App() {
                 in place instead, so there is nothing yet for a post id to
                 open into. */}
             {view === 'board' ? <Board now={now} onOpenPost={() => {}} /> : null}
-            {view === 'applications' ? <MyApplicationsPlaceholder now={now} /> : null}
+            {view === 'applications' ? (
+              <MyApplications now={now} onBrowseBoard={() => setView('board')} />
+            ) : null}
             {view === 'posts' ? <MyPostsPlaceholder /> : null}
             {view === 'admin' ? <Admin now={now} /> : null}
           </Shell>
         </VerificationGate>
       </div>
-    </div>
-  );
-}
-
-/**
- * Placeholder, on purpose — same reduction `Board.tsx` and `Admin.tsx` went
- * through: the nav entry and the store read (`myApplications`, already
- * viewer-scoped) exist now so a later task builds the sheet against real
- * data, but the sheet's layout is that task's job, not Task 7's.
- */
-function MyApplicationsPlaceholder({ now }: { now: number }) {
-  const count = myApplications(now).length;
-  return (
-    <div className="p-6">
-      <EmptyState
-        title="My applications"
-        body={`You have ${count} application${count === 1 ? '' : 's'} on file. The tracker sheet is built in a later task, against this same myApplications() read.`}
-      />
     </div>
   );
 }
