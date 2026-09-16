@@ -11,13 +11,19 @@
  * produced truth", and a missing prop (a `now` nobody passed, an id that
  * doesn't resolve) tends to show up as exactly one of those three strings.
  *
- * Four things beyond "it rendered, and it isn't lying":
+ * Five things beyond "it rendered, and it isn't lying":
  *
  *   1. The `getState()` guard (and its two neighbours). Grepped statically,
  *      before Vite is even started — see `checkArchitecturalGuard` below.
- *   2. The D2 gate: a pending viewer's `App` render carries no post, company,
- *      apply-route or applicant data — calibrated first against a verified
- *      viewer, so the detector is proven able to fail.
+ *   2. The D2 gate: a pending viewer's, and separately a signed-out viewer's,
+ *      `App` render carries no post, company, apply-route or applicant data
+ *      — calibrated first against a verified viewer, so the detector is
+ *      proven able to fail. One named, bounded exception: the persona
+ *      switcher and, for the signed-out case, `Login`'s own demo-account
+ *      roster — both stand in for Google's account chooser (design doc §7.1
+ *      rule 4), both disclose a member's name and gate state on purpose, and
+ *      both are excluded by name below, never by a blanket "ignore all member
+ *      names."
  *   3. Field scoping: `applicantsFor(postId)` returns rows to that post's
  *      poster and `[]` to every other member, admin included — this is the
  *      "third assertion" v1.3 ran as a render; here it runs as a direct call
@@ -30,6 +36,11 @@
  *      file must be either rendered above or named, with a reason, on the
  *      exempt list — because a module only `App.tsx` imports is not an
  *      orphan, but it can still go completely unrendered.
+ *   5. The contact-route gate: `Board`'s pre-confirm apply route (spec §13's
+ *      other named privacy gate, alongside D2) is absent from the DOM, not
+ *      merely hidden, for any post a member has not applied to — proven
+ *      non-vacuous the same way the D2 detector is, by asserting the set of
+ *      routes under test is non-empty before asserting their absence.
  */
 import { createElement as h } from 'react';
 import { renderToString } from 'react-dom/server';
@@ -61,7 +72,7 @@ function listSourceFiles(dir) {
 }
 
 // ---------------------------------------------------------------------------
-// Assertion 1 of 4: the `src/ui/` boundary guard (checked statically, no
+// Assertion 1 of 5: the `src/ui/` boundary guard (checked statically, no
 // server needed).
 //
 // `src/data/store.ts` documents `getState()` as "TEST-ONLY" and explains why:
@@ -128,7 +139,7 @@ function checkArchitecturalGuard() {
 checkArchitecturalGuard();
 
 // ---------------------------------------------------------------------------
-// Assertion 4 of 4 (part 1 — the module-level orphan check): any module
+// Assertion 4 of 5 (part 1 — the module-level orphan check): any module
 // under `src/` that nothing else in `src/` imports. Static, like the guard
 // above: every `.ts`/`.tsx` file's `import`/`export ... from`/`import(...)`
 // specifiers are pulled with a regex, relative ones resolved against the
@@ -314,7 +325,7 @@ renderScreen('Admin.tsx', 'Admin', AdminMod, 'Admin', { now });
 store.setCurrentMember('m_ananya');
 
 // ---------------------------------------------------------------------------
-// Assertion 4 of 4 (part 2 — the screen-coverage check): every `src/ui/*.tsx`
+// Assertion 4 of 5 (part 2 — the screen-coverage check): every `src/ui/*.tsx`
 // file is either rendered above or named, with why, on this list. The module
 // orphan check above cannot catch a screen with zero automated coverage: a
 // component only `App.tsx` imports is not an orphan by that check's
@@ -363,7 +374,7 @@ console.log(
 );
 
 // ---------------------------------------------------------------------------
-// Assertion 3 of 4: field scoping — rule 2, "applicant details reach exactly
+// Assertion 3 of 5: field scoping — rule 2, "applicant details reach exactly
 // one person," pinned directly against the store rather than against a
 // screen's markup. `p_foodhak` (posted by `m_meera`) carries four seeded
 // applicants, so this is not a vacuous check: three of the "other" members it
@@ -410,7 +421,8 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Assertion 2 of 4: D2, "an unverified account can see nothing."
+// Assertion 2 of 5: D2, "an unverified account can see nothing" — run twice,
+// once as a pending viewer and once as a viewer with no session at all.
 //
 // Pointed at `App`, not `Board`. Board was the wrong subject: it renders member
 // and post data only from `listPosts`, which returns [] for a gated viewer, so
@@ -418,11 +430,28 @@ try {
 // have. `App` is the real composition — persona switcher, nav, badge counts and
 // whatever the gate lets through — so it is where a leak would actually show.
 //
-// One ungated surface is excluded on purpose: the persona `<select>`. It stands
-// in for Google's account chooser and sits ABOVE the gate, so a blocked member
-// is not stranded with no way back to a verified account; `listPersonas` is
-// deliberately narrow (a name and a gate state, nothing else). Everything
-// outside that element must be empty of network data.
+// Two ungated surfaces are excluded on purpose, both named and bounded, never
+// blanket:
+//
+//   - The persona `<select>` in `App`'s own top bar (`outsideThePersonaSwitcher`
+//     below). It stands in for Google's account chooser and sits ABOVE the
+//     gate, so a blocked member is not stranded with no way back to a verified
+//     account; `listPersonas` is deliberately narrow (a name and a gate state,
+//     nothing else).
+//   - `Login`'s own "Or continue as a demo account" roster
+//     (`outsideTheLoginRoster` below), reachable only in the signed-out case:
+//     `VerificationGate` renders `<Login/>` when `getCurrentMember()` is
+//     `null`, and Login renders that same roster as `<button>`s, not a
+//     `<select>` — so the switcher exclusion above does not reach it. This is
+//     Fix 1's finding (design doc §7.1 rule 4, `STATE.md`): with no session at
+//     all, Login discloses every member's name and gate state, Vikram Bose's
+//     rejection included. It is a real, accepted exemption, not something this
+//     assertion should paper over — so it is excluded by name, exactly that
+//     block, rather than by loosening the leak check to ignore member names
+//     generally. Widening it that way would make this assertion unable to
+//     fail, which is the one thing it exists to prevent.
+//
+// Everything outside those two elements must be empty of network data.
 //
 // The check begins with a positive control: the same detector run against a
 // VERIFIED viewer must find post data. Without it, a detector broken by an
@@ -439,7 +468,9 @@ try {
 // they submitted" — so `ownFieldValues` below is subtracted from the secret
 // list before either check runs. This narrows what counts as a leak; it must
 // not narrow it to nothing, which is why the positive control still has to
-// fire afterwards.
+// fire afterwards. The signed-out case has no member at all, so nothing is
+// subtracted there — a viewer with no session has no evidence of their own to
+// carve out.
 // ---------------------------------------------------------------------------
 console.log('\nD2 gate assertion:\n');
 
@@ -461,6 +492,42 @@ function outsideThePersonaSwitcher(html) {
     throw new Error('App rendered no persona <select>; the ungated-surface exclusion would be silently wrong');
   }
   return html.slice(0, start) + html.slice(end + '</select>'.length);
+}
+
+/**
+ * The markup with `Login`'s demo-account roster cut out — the named, bounded
+ * exception Fix 1 documents (design doc §7.1 rule 4, `STATE.md`): the roster
+ * discloses every member's name and gate state to a signed-out visitor, on
+ * purpose, standing in for Google's account chooser. `Login.tsx` renders it as
+ * `<button>`s inside the block introduced by the "Or continue as a demo
+ * account" label, nothing else in `Login`'s render carries that exact string,
+ * and nothing follows that block but closing tags — so slicing at its
+ * wrapping `<div>` removes exactly the roster and nothing past it. Throws
+ * rather than silently excluding nothing if that marker or its wrapper ever
+ * moves, for the same reason `outsideThePersonaSwitcher` throws: a narrower
+ * exclusion must never be able to silently become a wider one.
+ *
+ * What this costs: a roster that grew a new field (an email, a LinkedIn URL)
+ * alongside name and status would not be caught by this assertion — only by
+ * whatever assertion is added for that new field. That is the deliberate
+ * shape of a named exclusion; the alternative, ignoring member names outright
+ * whenever the viewer is signed out, would swallow every other leak this
+ * check is meant to catch.
+ */
+function outsideTheLoginRoster(html) {
+  const marker = 'Or continue as a demo account';
+  const markerIdx = html.indexOf(marker);
+  if (markerIdx === -1) {
+    throw new Error(
+      'Login rendered no demo-account roster marker; either the seed has no personas (unexpected) or the ' +
+        'roster was renamed — this exclusion needs to be re-pointed, not silently skipped',
+    );
+  }
+  const blockStart = html.lastIndexOf('<div', markerIdx);
+  if (blockStart === -1) {
+    throw new Error("found the demo-roster marker but not its wrapping <div> — can't bound the exclusion safely");
+  }
+  return html.slice(0, blockStart);
 }
 
 try {
@@ -514,9 +581,108 @@ try {
         `pending viewer (${pending.id}) sees none of ${secrets.length} network data points beyond their own submitted evidence`,
       );
     }
+
+    // The same assertion again, for a viewer with no session at all — Fix
+    // 1's case. `store.signOut()` is the only way to reach this state (see
+    // `STATE.md`); `App` renders its own top bar plus `VerificationGate`,
+    // which renders `Login` once `getCurrentMember()` is `null`. Both
+    // ungated surfaces have to be cut out here, not just the switcher, or
+    // Login's own roster (button text, not a `<select>`) would read as a
+    // leak of every member's name and gate state — which Fix 1 already
+    // named and accepted as out of scope for this assertion.
+    store.signOut();
+    const signedOutGated = outsideTheLoginRoster(outsideThePersonaSwitcher(render(AppMod.App, {})));
+    const signedOutLeaked = secrets.filter(([, v]) => containsValue(signedOutGated, v));
+    if (signedOutLeaked.length) {
+      fail(
+        'D2 gate (signed out)',
+        `signed-out viewer's App render leaks ${signedOutLeaked.map(([k, v]) => `${k} "${v}"`).join(', ')}`,
+      );
+    } else {
+      ok(
+        'D2 gate (signed out)',
+        `signed-out viewer sees none of ${secrets.length} network data points (Login's demo-account roster ` +
+          `excluded by name — see outsideTheLoginRoster)`,
+      );
+    }
   }
 } catch (err) {
   fail('D2 gate', err.message);
+} finally {
+  store.setCurrentMember('m_ananya');
+}
+
+// ---------------------------------------------------------------------------
+// Assertion 5 of 5: the contact-route gate — spec §13's other named privacy
+// gate, alongside D2.
+//
+// `Board.tsx`'s own docblock states the rule: the apply route is "only ever
+// computed for display AFTER an application already exists" — `RouteDisplay`
+// mounts only once `applicationFor(post.id)` returns a row, so a post the
+// viewer has not applied to should carry no `href`, no `tel:`, no `mailto:`,
+// anywhere in the render. Absent, not CSS-hidden. Nothing before this
+// assertion checked that claim: a reviewer injected a live
+// `<a href="tel:...">` into the pre-confirm branch and 162 tests plus every
+// other smoke assertion stayed green, because the invariant held by
+// construction, not by anything that would have noticed if it stopped.
+//
+// Scoped to posts the viewer has NOT applied to. A member who HAS applied is
+// legitimately shown the route (that is what `RouteDisplay` is for) — testing
+// for its absence there would fail on correct behaviour, not a leak.
+//
+// The expected routes are read from the seeded store, not hardcoded, so this
+// follows the seed rather than needing hand-maintenance if it changes: every
+// un-applied post's `applyValue`, plus the exact `tel:`/`mailto:` string
+// `Board.tsx`'s own `routeFor` would build for a phone or email post (a link
+// or through-me post has no separate scheme to check — the bare value is the
+// whole route).
+//
+// Non-vacuous by construction, proven the same way the D2 detector is proven:
+// the set of routes under test must be asserted non-empty BEFORE their
+// absence is asserted, or this could pass by having nothing to find.
+// ---------------------------------------------------------------------------
+console.log('\nContact-route gate assertion (Board):\n');
+
+try {
+  const viewerId = 'm_ananya';
+  store.setCurrentMember(viewerId);
+  const posts = store.listPosts(now);
+  const unapplied = posts.filter((p) => !store.applicationFor(p.id));
+
+  const routes = [];
+  for (const p of unapplied) {
+    routes.push(['apply value', p.applyValue]);
+    if (p.applyMethod === 'phone') routes.push(['tel: route', `tel:${p.applyValue.replace(/\s+/g, '')}`]);
+    if (p.applyMethod === 'email') routes.push(['mailto: route', `mailto:${p.applyValue}`]);
+  }
+
+  if (!routes.length) {
+    throw new Error(
+      `${viewerId} has applied to every seeded post — there is no un-applied post left to test the contact-route ` +
+        `gate against; the detector cannot fail, so it proves nothing (did the seed change?)`,
+    );
+  }
+  ok(
+    'contact-route detector',
+    `${routes.length} route string(s) to check across ${unapplied.length} un-applied post(s) — the set is non-empty`,
+  );
+
+  const html = render(BoardMod.Board, { now });
+  const leaked = routes.filter(([, v]) => containsValue(html, v));
+  if (leaked.length) {
+    fail(
+      'contact-route gate',
+      `Board's pre-confirm render leaks ${leaked.map(([k, v]) => `${k} "${v}"`).join(', ')} — a route must not ` +
+        `reach the DOM before Apply is confirmed`,
+    );
+  } else {
+    ok(
+      'contact-route gate',
+      `Board renders no apply route (bare value or tel:/mailto:) for any of ${unapplied.length} un-applied post(s)`,
+    );
+  }
+} catch (err) {
+  fail('contact-route gate', err.message);
 } finally {
   store.setCurrentMember('m_ananya');
 }

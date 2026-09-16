@@ -149,8 +149,23 @@ existed with no render coverage of any kind. Both checks are green now.
    evidence (name, batch, programme, LinkedIn, `knownBy` — theirs to see,
    never a leak). Asserted in `scripts/smoke.mjs` against `App`'s full render
    (calibrated with a positive control against a verified viewer first, so
-   the detector is proven able to fail), and walked by hand in a real browser
-   for this task (see the Task 14 report).
+   the detector is proven able to fail), for both a pending viewer and a
+   signed-out one, and walked by hand in a real browser for this task (see
+   the Task 14 report).
+
+   **One deliberate, named exemption:** `store.listPersonas()` is ungated on
+   purpose, and both `Login.tsx` and `App.tsx`'s switcher render it as a
+   roster of buttons — so with **no session at all**, the Login screen
+   discloses all eight members' names and gate states, including who is
+   pending and who was rejected (Vikram Bose, in the current seed). This is
+   demo auth scaffolding standing in for Google's own account chooser (design
+   doc §6 item 1); it has to sit above D2, not behind it, or a member stuck on
+   a pending or rejected persona would have no way to switch to a verified
+   one. Real Google sign-in removes the whole affordance, roster included. It
+   is bounded on purpose — a name and a gate state, nothing else — and the
+   smoke script's D2 case excludes exactly that roster by name, not member
+   names in general, so the assertion cannot be quietly weakened by widening
+   the exclusion.
 2. **Rule 2 — an applicant's details reach exactly one person: that post's
    poster.** `store.applicantsFor(postId)` is the *only* place a member ever
    reads another member's data, and it has no admin branch on purpose — "the

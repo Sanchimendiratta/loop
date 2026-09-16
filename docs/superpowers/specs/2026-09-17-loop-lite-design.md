@@ -198,7 +198,24 @@ The rules, in order of importance:
 4. **D2 survives the deletion of `core/privacy.ts`.** An unverified or pending
    account reads nothing — not posts, not members, not counts. The rule moves
    into the store's viewer resolution so removing the module does not remove the
-   guarantee. The smoke script's D2 assertion is carried forward unchanged.
+   guarantee. The smoke script's D2 assertion is carried forward, and extended to
+   a signed-out viewer as well as a pending one.
+
+   **The persona switcher is a named, deliberate exemption from this rule, not
+   an oversight.** `store.listPersonas()` is ungated by design, and both
+   `Login.tsx` (screen 1's roster) and `App.tsx`'s switcher render it as
+   buttons — so a visitor with **no session at all** sees every member's name
+   and gate state, including who is pending and who was rejected. That is a
+   real disclosure, not a rounding error, and it is not covered by the D2
+   guarantee above. It stands in for Google's own account chooser (§6 item 1),
+   which sits above sign-in rather than behind it: a member stuck on an
+   unverified or rejected persona has to be able to switch to a verified one,
+   which means this list has to be reachable before D2 has anything to gate.
+   Real Google OAuth replaces the whole affordance, roster included — there is
+   no equivalent surface to secure once it does. What keeps this exemption from
+   swallowing the rule is its narrowness: `listPersonas()` returns a name and a
+   gate state, nothing else, and the smoke script's D2 case excludes exactly
+   that roster, by name, rather than exempting member names in general.
 5. **The contact route stays out of the DOM until Apply.** Kept from D13 even
    though Lite drops the destination taxonomy: the hiring contact is a
    non-member who never consented to appearing on a durable, searchable page.
