@@ -10,38 +10,33 @@ import { useEffect, useRef } from 'react';
 export const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(' ');
 
 /**
- * The single source of visual truth for the tracker.
+ * The single source of visual truth for status colouring in this build.
  *
- * Keyed on WHO OWES, not on lateness — Task 22's tracker requires an overdue
- * referral request and an unanswered apply prompt to read identically, and
- * both resolve their styling through this one table so they cannot drift
- * apart. `stale` is for something that has gone quiet without a clear owner;
- * `ok` is for on-track; `neutral` is for closed/terminal rows.
+ * `owed` marks a rejection (Admin's decided list, and every inline error
+ * banner across the app — `text-[var(--color-owed)]` traces back to the same
+ * variable this table's `owed.chip` uses); `ok` marks an approval; `neutral`
+ * is the default for a status or connection chip with no urgency of its own;
+ * `stale` is for a row that has gone quiet without anyone having acted on it
+ * — a stale post on the board, or an application `MyApplications.tsx`'s
+ * `StaleDot` has not seen an update on in 14 days. Every tone resolves
+ * through this one table so a chip and a dot for the same state cannot drift
+ * apart.
  */
 export const TONE = {
   owed: {
     chip: 'bg-[var(--color-owed-soft)] text-[var(--color-owed)] ring-1 ring-[var(--color-owed)]/25',
-    edge: 'border-l-[var(--color-owed)]',
     dot: 'bg-[var(--color-owed)]',
-  },
-  waiting: {
-    chip: 'bg-stone-100 text-stone-600 ring-1 ring-stone-300',
-    edge: 'border-l-stone-300',
-    dot: 'bg-stone-400',
   },
   stale: {
     chip: 'bg-amber-50 text-amber-800 ring-1 ring-amber-500/30',
-    edge: 'border-l-[var(--color-stale)]',
     dot: 'bg-[var(--color-stale)]',
   },
   ok: {
     chip: 'bg-brand-50 text-brand-700 ring-1 ring-brand-500/25',
-    edge: 'border-l-brand-500',
     dot: 'bg-brand-500',
   },
   neutral: {
     chip: 'bg-stone-100 text-stone-600 ring-1 ring-stone-200',
-    edge: 'border-l-stone-200',
     dot: 'bg-stone-300',
   },
 } as const;
@@ -227,18 +222,6 @@ export function EmptyState({ title, body, action }: { title: string; body?: stri
       <p className="text-sm font-medium text-stone-700">{title}</p>
       {body ? <p className="mx-auto mt-1 max-w-sm text-sm text-stone-500">{body}</p> : null}
       {action ? <div className="mt-4">{action}</div> : null}
-    </div>
-  );
-}
-
-/** A labelled meter — e.g. capacity consumed, or time left in an SLA window. */
-export function Meter({ value, tone = 'ok' }: { value: number; tone?: Tone }) {
-  return (
-    <div className="h-1.5 w-full overflow-hidden rounded-full bg-stone-200" role="presentation">
-      <div
-        className={cx('h-full rounded-full transition-[width]', TONE[tone].dot)}
-        style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
-      />
     </div>
   );
 }

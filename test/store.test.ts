@@ -390,6 +390,7 @@ describe('verification', () => {
       name: pending.name,
       status: 'rejected',
       decidedById: admin.id,
+      decidedByName: admin.name,
       decidedAt: NOW,
       decisionNote: 'No XLRI entry on LinkedIn.',
     });
@@ -398,6 +399,28 @@ describe('verification', () => {
   test('the decided list is admin-only, even for a verified member', () => {
     asMember((m) => m.status === 'verified' && !m.isAdmin);
     expect(store.decidedCases()).toEqual([]);
+  });
+});
+
+describe('pendingCases field scoping (Fix wave 3, item 1)', () => {
+  // `pendingCases()` used to return `Member[]` — email and googleSub
+  // included — to `Admin.tsx`'s `QueueRow`, which renders neither. `toEqual`
+  // against the exact expected shape catches a regression back to the full
+  // row, not just a missing field: an object with extra keys fails it too.
+  test('pendingCases returns a narrowed projection, not full member rows', () => {
+    asMember((m) => m.isAdmin);
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+
+    const row = store.pendingCases().find((c) => c.id === pending.id)!;
+    expect(row).toEqual({
+      id: pending.id,
+      name: pending.name,
+      batch: pending.batch,
+      programme: pending.programme,
+      knownBy: pending.knownBy,
+      linkedinUrl: pending.linkedinUrl,
+      requestedAt: pending.requestedAt,
+    });
   });
 });
 

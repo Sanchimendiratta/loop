@@ -15,6 +15,17 @@ export function daysBetween(from: number, to: number): number {
   return Math.floor((to - from) / DAY_MS);
 }
 
+/**
+ * Relative day count for display — "today" or "Nd ago" — never a bare
+ * timestamp. Was defined identically in `Admin.tsx`, `MyApplications.tsx` and
+ * `MyPosts.tsx`, and duplicated again as the label branch of `postAge`
+ * (`core/freshness.ts`); this is the one copy all four now share.
+ */
+export function dayLabel(at: number, now: number): string {
+  const d = daysBetween(at, now);
+  return d === 0 ? 'today' : `${d}d ago`;
+}
+
 export function addDays(at: number, days: number): number {
   return at + days * DAY_MS;
 }

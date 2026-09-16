@@ -5,9 +5,12 @@ import { load } from './data/store.ts';
 import swUrl from './sw.ts?worker&url';
 import './styles.css';
 
-// Seeds or rehydrates AND runs the clock (unlike `reset`), so a session
-// returning after time has passed sees requests and posts caught up rather
-// than frozen at whenever the demo was authored.
+// Rehydrates the persisted workspace if one is there and its schema version
+// still matches, or seeds a fresh one otherwise (see `load`'s docblock in
+// store.ts). There is no clock to run and no requests to catch up — Lite
+// dropped both; post and application ageing is computed at read time by
+// `core/freshness.ts` and `core/applications.ts`, from whatever `now` a
+// screen is rendered with, not from anything this call does.
 load();
 
 // Registering the worker is not the same thing as asking for permission —

@@ -11,9 +11,10 @@ import {
   reportPost,
 } from '../data/store.ts';
 import { FUNCTIONS } from '../data/schema.ts';
-import type { Application, ApplicationStatus, Connection, FunctionArea, JobPost } from '../data/schema.ts';
+import type { Application, Connection, FunctionArea, JobPost } from '../data/schema.ts';
 import { connectionBadge, connectionLine } from '../core/disclosure.ts';
 import { postAge } from '../core/freshness.ts';
+import { STATUS_LABEL } from '../core/applications.ts';
 import { Button, Chip, EmptyState, Tabs, cx } from './primitives.tsx';
 import { PostComposer } from './PostComposer.tsx';
 
@@ -43,16 +44,6 @@ const EXP_BANDS: ExpBand[] = [
   { id: '6-10', label: '6–10 yrs', min: 6, max: 10 },
   { id: '10+', label: '10+ yrs', min: 10, max: Infinity },
 ];
-
-const STATUS_LABEL: Record<ApplicationStatus, string> = {
-  yet_to_respond: 'Yet to respond',
-  in_review: 'In review',
-  interview_scheduled: 'Interview scheduled',
-  awaiting_next_round: 'Awaiting next round',
-  offer: 'Offer',
-  rejected: 'Rejected',
-  no_response: 'No response',
-};
 
 const SORT_OPTIONS: { id: SortMode; label: string }[] = [
   { id: 'connection', label: 'Connection first (default)' },
@@ -326,7 +317,15 @@ export function Board({ now }: BoardProps) {
                 <th scope="col" className="px-3 py-2">
                   Posted by
                 </th>
-                <th scope="col" aria-sort={sort === 'recent' ? 'descending' : 'other'} className="px-3 py-2 align-bottom">
+                {/*
+                 * `aria-sort` names the column the table is actually ordered
+                 * by. In `recent` mode that is this one, newest first. In
+                 * `connection` mode (the default) the board is ordered by
+                 * connection rung instead — a column this table has no `<th>`
+                 * for — so Posted gets `none`, not a value implying it is
+                 * still the sort key under a different algorithm.
+                 */}
+                <th scope="col" aria-sort={sort === 'recent' ? 'descending' : 'none'} className="px-3 py-2 align-bottom">
                   <div className="flex flex-col gap-1">
                     <span>Posted</span>
                     <Tabs items={SORT_OPTIONS} active={sort} onChange={(id) => setSort(id as SortMode)} />
@@ -361,6 +360,21 @@ export function Board({ now }: BoardProps) {
                         <p className="mt-1 text-sm font-medium text-stone-800">
                           {connectionLine(post.connection, who, post.contactName)}
                         </p>
+                        {post.note ? <p className="mt-1 text-sm text-stone-600">{post.note}</p> : null}
+                        {post.jdUrl ? (
+                          // Plain anchor the reader clicks themselves — nothing here fetches,
+                          // embeds or previews the URL (§7.4), the same standard the LinkedIn
+                          // link gets in MyPosts.tsx. Labelled rather than showing the raw URL
+                          // so it reads as a link to a job description, not just any link.
+                          <a
+                            href={post.jdUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-1 inline-block text-sm font-medium text-brand-700 underline"
+                          >
+                            Job description
+                          </a>
+                        ) : null}
                       </td>
                       <td data-label="Company" className={cx('px-3 py-3', dim)}>
                         <span className={company.withheld ? 'italic' : undefined}>{company.text}</span>

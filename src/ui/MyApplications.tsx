@@ -31,7 +31,7 @@ import {
 import { APPLICATION_STATUSES } from '../data/schema.ts';
 import type { Application, ApplicationStatus, ApplyMethod, JobPost } from '../data/schema.ts';
 import { isStale, staleCount, staleNotice, STATUS_LABEL } from '../core/applications.ts';
-import { daysBetween } from '../core/time.ts';
+import { dayLabel } from '../core/time.ts';
 import { EmptyState, Select, TONE, cx } from './primitives.tsx';
 
 export interface MyApplicationsProps {
@@ -51,12 +51,6 @@ function formatFieldList(items: string[]): string {
   if (items.length === 0) return '';
   if (items.length === 1) return items[0];
   return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
-}
-
-/** Relative day count, never a bare timestamp — matches `postAge`'s label on the board. */
-function dayLabel(at: number, now: number): string {
-  const d = daysBetween(at, now);
-  return d === 0 ? 'today' : `${d}d ago`;
 }
 
 const APPLY_METHOD_LABEL: Record<Exclude<ApplyMethod, 'through_me'>, string> = {

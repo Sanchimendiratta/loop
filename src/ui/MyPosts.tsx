@@ -31,7 +31,7 @@ import { POST_STATUSES } from '../data/schema.ts';
 import type { JobPost, PostStatus } from '../data/schema.ts';
 import { postAge } from '../core/freshness.ts';
 import { STATUS_LABEL } from '../core/applications.ts';
-import { daysBetween } from '../core/time.ts';
+import { dayLabel } from '../core/time.ts';
 import { Button, Chip, EmptyState, Select, cx } from './primitives.tsx';
 
 export interface MyPostsProps {
@@ -52,12 +52,6 @@ const POST_STATUS_LABEL: Record<PostStatus, string> = {
   filled: 'Filled',
   unsure: 'Not sure',
 };
-
-/** Relative day count, never a bare timestamp — matches `postAge`'s label on the board. */
-function dayLabel(at: number, now: number): string {
-  const d = daysBetween(at, now);
-  return d === 0 ? 'today' : `${d}d ago`;
-}
 
 /**
  * The company column, poster's-own-post version of `Board.tsx`'s

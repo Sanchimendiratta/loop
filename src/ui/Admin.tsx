@@ -39,17 +39,11 @@ import {
   getPost,
   listReports,
   pendingCases,
-  posterName,
 } from '../data/store.ts';
-import type { Member, Report } from '../data/schema.ts';
-import { daysBetween } from '../core/time.ts';
+import type { PendingCase } from '../data/store.ts';
+import type { Report } from '../data/schema.ts';
+import { dayLabel } from '../core/time.ts';
 import { Button, Chip, EmptyState, Field, Textarea } from './primitives.tsx';
-
-/** Relative day count, never a bare timestamp — same idiom every other sheet uses. */
-function dayLabel(at: number, now: number): string {
-  const d = daysBetween(at, now);
-  return d === 0 ? 'today' : `${d}d ago`;
-}
 
 /**
  * The plain default note an approval carries. §3 requires every decision to
@@ -73,7 +67,7 @@ function LinkedInLink({ url }: { url: string }) {
   );
 }
 
-function QueueRow({ member, now }: { member: Member; now: number }) {
+function QueueRow({ member, now }: { member: PendingCase; now: number }) {
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -260,7 +254,7 @@ function DecidedList({ now }: { now: number }) {
                     </Chip>
                   </td>
                   <td data-label="Decided by" className="px-3 py-3 text-stone-600">
-                    {member.decidedById ? posterName(member.decidedById) : '—'}
+                    {member.decidedByName}
                   </td>
                   <td data-label="Decided" className="px-3 py-3 tabular-nums text-stone-600">
                     {member.decidedAt ? dayLabel(member.decidedAt, now) : '—'}

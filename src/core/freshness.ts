@@ -7,7 +7,7 @@
  * deliberately no `shouldArchive` — a poster who never returns should see their
  * post fade, not vanish.
  */
-import { daysBetween } from './time.ts';
+import { dayLabel, daysBetween } from './time.ts';
 
 export const STALE_AFTER_DAYS = 30;
 
@@ -16,6 +16,6 @@ export function postAge(post: { postedAt: number }, now: number): { ageDays: num
   return {
     ageDays,
     stale: ageDays >= STALE_AFTER_DAYS,
-    label: ageDays === 0 ? 'today' : `${ageDays}d ago`,
+    label: dayLabel(post.postedAt, now),
   };
 }

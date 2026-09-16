@@ -350,7 +350,12 @@ export function getPost(id: string): JobPost | null {
 /**
  * The poster's display name, by member id — everything else about another
  * member stays behind rule 2. Callers hold a post, so `posterName(post.posterId)`
- * is the shape this is written for.
+ * is the shape this is written for — not a general member-name lookup. Its
+ * only production callers are `Board.tsx` and `MyApplications.tsx`, both
+ * always called with a `post.posterId`. `decidedCases()` below used to be
+ * called this way too (`posterName(member.decidedById)` in `Admin.tsx`, to
+ * show which admin decided a case), which is not a post's poster — that is
+ * fixed by having `decidedCases()` carry `decidedByName` itself instead.
  */
 export function posterName(id: string): string {
   const viewer = viewerOrNull();
@@ -432,20 +437,40 @@ export function myNotifications(): Notification[] {
     .sort((a, b) => b.at - a.at);
 }
 
+export interface PendingCase {
+  id: string;
+  name: string;
+  batch: number;
+  programme: Programme;
+  knownBy: string | null;
+  linkedinUrl: string;
+  requestedAt: number;
+}
+
 /**
  * The admin queue. Admin-only, and still gated on the viewer being verified.
  *
- * Returns full `Member` rows, including `email` and `googleSub` — the same
- * over-disclosure `decidedCases` was narrowed away from below. Left alone in
- * this pass: `Admin.tsx`'s `QueueRow` takes `member: Member` as its prop type,
- * so narrowing this return type is a UI change, out of this file's scope.
+ * Returns `PendingCase`, not `Member` — the same narrowing `decidedCases`
+ * below gets. `Admin.tsx`'s `QueueRow` renders a name, batch, programme,
+ * `knownBy`, LinkedIn URL and requested-on, two buttons, and nothing else; it
+ * has no business handing that screen `email` or `googleSub` along with the
+ * rest of the row. Row scoping (admin-only) is not field scoping.
  */
-export function pendingCases(): Member[] {
+export function pendingCases(): PendingCase[] {
   const viewer = viewerOrNull();
   if (!viewer || !viewer.isAdmin) return [];
   return getState()
     .members.filter((m) => m.status === 'pending')
-    .sort((a, b) => a.requestedAt - b.requestedAt);
+    .sort((a, b) => a.requestedAt - b.requestedAt)
+    .map((m) => ({
+      id: m.id,
+      name: m.name,
+      batch: m.batch,
+      programme: m.programme,
+      knownBy: m.knownBy,
+      linkedinUrl: m.linkedinUrl,
+      requestedAt: m.requestedAt,
+    }));
 }
 
 export function listReports(): Report[] {
@@ -461,6 +486,8 @@ export interface DecidedCase {
   name: string;
   status: MemberStatus;
   decidedById: string | null;
+  /** The reviewer's display name, resolved here rather than by the caller — see below. */
+  decidedByName: string;
   decidedAt: number | null;
   decisionNote: string;
 }
@@ -477,18 +504,29 @@ export interface DecidedCase {
  * decision, who decided it, when, and the note; it has no business handing
  * that screen `email` or `googleSub` along with the rest of the row. Row
  * scoping (admin-only) is not field scoping.
+ *
+ * `decidedByName` is resolved here, not by the caller: `posterName`'s
+ * contract is "the caller holds a post" (`posterName(post.posterId)`), and
+ * "which admin decided this case" is not that — it is an unscoped lookup by
+ * member id, over a table `Admin.tsx` (a screen, not the store) has no
+ * business reading directly. Doing the lookup here, once, against the same
+ * `s.members` this function already has open, keeps that lookup inside the
+ * repository boundary instead of pushing it back out through a function
+ * whose docblock says it is for something else.
  */
 export function decidedCases(): DecidedCase[] {
   const viewer = viewerOrNull();
   if (!viewer || !viewer.isAdmin) return [];
-  return getState()
-    .members.filter((m) => m.decidedById !== null)
+  const s = getState();
+  return s.members
+    .filter((m) => m.decidedById !== null)
     .sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0))
     .map((m) => ({
       id: m.id,
       name: m.name,
       status: m.status,
       decidedById: m.decidedById,
+      decidedByName: s.members.find((x) => x.id === m.decidedById)?.name ?? 'A member',
       decidedAt: m.decidedAt,
       decisionNote: m.decisionNote,
     }));
