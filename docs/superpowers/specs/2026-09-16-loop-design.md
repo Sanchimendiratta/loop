@@ -99,6 +99,27 @@ src/ui/       React screens
 test/         Vitest over src/core
 ```
 
+### 4.0 Row scoping is not field scoping
+
+`PublicMember` is what every member read returns to anyone but the member themselves:
+
+```ts
+export type PublicMember = Omit<Member, 'googleSub' | 'privacy' | 'caps' | 'email'> & {
+  /** Present only for the viewer's own record; null for everyone else. */
+  email: string | null;
+};
+```
+
+Scoping *rows* to a viewer is not the same as scoping *fields*, and the gap is not
+theoretical. A full `Member` carries `privacy.blockedCompanyIds`, so any verified
+member could read that Karan (§4) has blocked his own employer — which discloses
+that he is searching, the single fact D6 exists to protect. `caps.autoDeclineMessage`
+and `googleSub` are likewise nobody else's business.
+
+`getCurrentMember()` returns the full `Member` — it is you. Every other member read
+returns `PublicMember`, so a screen cannot render a blocked list even by accident.
+The type is the enforcement; a comment would not be.
+
 ### 4.1 What the store enforces, so no screen can route around it
 
 1. **The privacy filter** (§7) — every read is viewer-scoped.
