@@ -160,17 +160,39 @@ describe('isRemote provenance', () => {
     expect(afterPaste.isRemote).toBe(true);
   });
 
-  test('a poster who UNTICKS a parsed Remote is not overruled by a later paste', () => {
+  /**
+   * PINS A DESIGN DECISION — it is not a regression detector, and re-review
+   * caught me implying otherwise.
+   *
+   * A hand-untick followed by a paste that ITSELF says Remote re-ticks the box.
+   * That is deliberate: the second paste makes a fresh claim rather than
+   * carrying a stale one, so it is allowed to win. The behaviour is identical
+   * under the rejected `locationSource`-borrow, so no mutation of the fix can
+   * make this test fail. It is here to record the decision and to fail if
+   * someone later makes a hand-untick permanently sticky without arguing for
+   * it — a defensible choice, but a different product than the one agreed.
+   */
+  test('DESIGN: a hand-untick is re-ticked by a later paste that itself says Remote', () => {
     const afterRemote = mergeParsedIntoForm(EMPTY_FORM, REMOTE_ROLE, parsePost(REMOTE_ROLE));
-    expect(afterRemote.isRemoteFromPaste).toBe(true);
-
     const handUnticked = editField(afterRemote, 'isRemote', false);
-    expect(handUnticked.isRemoteFromPaste).toBe(false);
+    expect(handUnticked.isRemote).toBe(false);
 
     const afterSecond = mergeParsedIntoForm(handUnticked, REMOTE_ROLE, parsePost(REMOTE_ROLE));
-    // This one SHOULD re-tick: the new paste itself says Remote, which is a
-    // fresh claim rather than a stale one.
     expect(afterSecond.isRemote).toBe(true);
+  });
+
+  /**
+   * The sequence re-review traced by hand and found untested. The tick must
+   * survive, because a hand toggle cleared `isRemoteFromPaste` and this branch
+   * only clears a tick that a parse owned.
+   */
+  test('a hand tick set after a paste survives a later paste that finds no location at all', () => {
+    const afterOnsite = mergeParsedIntoForm(EMPTY_FORM, ONSITE_ROLE, parsePost(ONSITE_ROLE));
+    const handTicked = editField(afterOnsite, 'isRemote', true);
+
+    const NO_LOCATION = 'Someone good for a senior role, drop me a line.';
+    const afterNowhere = mergeParsedIntoForm(handTicked, NO_LOCATION, parsePost(NO_LOCATION));
+    expect(afterNowhere.isRemote).toBe(true);
   });
 
   test('a paste that finds no location at all clears a previously parsed Remote tick', () => {

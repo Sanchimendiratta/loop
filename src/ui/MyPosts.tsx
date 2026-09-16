@@ -165,7 +165,9 @@ function PostRow({ post, now }: { post: JobPost; now: number }) {
           <button
             type="button"
             aria-expanded={expanded}
-            aria-controls={panelId}
+            // Only while the panel exists: the row is mounted on expand rather than
+            // hidden, so a permanent `aria-controls` would point at nothing.
+            aria-controls={expanded ? panelId : undefined}
             onClick={() => setExpanded((v) => !v)}
             className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-medium text-stone-700 ring-1 ring-stone-300 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           >
@@ -217,7 +219,24 @@ function PostRow({ post, now }: { post: JobPost; now: number }) {
         </tr>
       ) : null}
 
-      <tr id={panelId} hidden={!expanded} className="border-b border-stone-100 bg-stone-50">
+      {/*
+       * Mounted on expand, not hidden by attribute. Two reasons, and the second
+       * is the one that matters:
+       *
+       * 1. `hidden` does not survive this table's own mobile CSS. At <=767px
+       *    `.stack-table tr { display: block }` is an AUTHOR rule and the
+       *    `[hidden] { display: none }` it has to beat is a USER-AGENT rule, so
+       *    the author rule wins on origin no matter its specificity — the panel
+       *    stayed visible on every phone and the toggle did nothing.
+       * 2. This is the one screen where a member reads another member's
+       *    details. Applicant names, batches, programmes and LinkedIn URLs
+       *    should not sit in the markup of a panel nobody opened. The branch
+       *    already holds this standard for the apply route on the board: absent
+       *    from the DOM, not merely hidden — because a hidden thing is still a
+       *    present thing.
+       */}
+      {expanded ? (
+      <tr id={panelId} className="border-b border-stone-100 bg-stone-50">
         <td colSpan={5} className="plain px-3 py-4">
           {applicants.length === 0 ? (
             <p className="text-sm text-stone-500">No one has applied yet.</p>
@@ -256,6 +275,7 @@ function PostRow({ post, now }: { post: JobPost; now: number }) {
           )}
         </td>
       </tr>
+      ) : null}
     </Fragment>
   );
 }
