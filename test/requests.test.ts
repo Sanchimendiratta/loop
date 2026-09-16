@@ -3,7 +3,7 @@ import {
   OWNER_BY_STATE, RuleViolation, actorMayTransition, applyTransition, canTransition, isTerminal,
 } from '../src/core/requests.ts';
 import { DAY_MS } from '../src/core/time.ts';
-import { TERMINAL_REQUEST_STATES } from '../src/data/schema.ts';
+import { REQUEST_STATES, TERMINAL_REQUEST_STATES } from '../src/data/schema.ts';
 import type { ReferralRequest } from '../src/data/schema.ts';
 
 const NOW = Date.UTC(2026, 8, 16);
@@ -47,9 +47,12 @@ describe('legal transitions', () => {
   });
 
   test('a terminal state goes nowhere', () => {
+    // Every terminal state against every state, not one sampled target.
     for (const s of TERMINAL_REQUEST_STATES) {
-      expect(canTransition(s, 'accepted'), `${s} should be terminal`).toBe(false);
       expect(isTerminal(s)).toBe(true);
+      for (const to of REQUEST_STATES) {
+        expect(canTransition(s, to), `${s} -> ${to} must be refused`).toBe(false);
+      }
     }
   });
 
@@ -80,6 +83,30 @@ describe('who may make a transition', () => {
   test('only the system expires a request', () => {
     expect(actorMayTransition('system', 'expired')).toBe(true);
     expect(actorMayTransition('referrer', 'expired')).toBe(false);
+  });
+
+  test('every system-only state is closed to both humans', () => {
+    // Enumerated rather than sampled: a refactor of SYSTEM_ONLY that dropped one
+    // of these would otherwise leave the suite green.
+    for (const s of ['expired', 'expired_unsubmitted', 'no_response'] as const) {
+      expect(actorMayTransition('system', s), `system should set ${s}`).toBe(true);
+      expect(actorMayTransition('seeker', s), `seeker must not set ${s}`).toBe(false);
+      expect(actorMayTransition('referrer', s), `referrer must not set ${s}`).toBe(false);
+    }
+  });
+
+  test('every seeker-only outcome is closed to the referrer', () => {
+    for (const s of ['interviewing', 'offer', 'rejected'] as const) {
+      expect(actorMayTransition('seeker', s), `seeker should set ${s}`).toBe(true);
+      expect(actorMayTransition('referrer', s), `referrer must not set ${s}`).toBe(false);
+    }
+  });
+
+  test('every referrer-only action is closed to the seeker', () => {
+    for (const s of ['accepted', 'declined', 'submitted', 'role_closed'] as const) {
+      expect(actorMayTransition('referrer', s), `referrer should set ${s}`).toBe(true);
+      expect(actorMayTransition('seeker', s), `seeker must not set ${s}`).toBe(false);
+    }
   });
 });
 
