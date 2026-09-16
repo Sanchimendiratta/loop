@@ -43,7 +43,7 @@ Lite is eight screens, three sheets, no email, and its governing rule is
 ```sh
 npm install
 npm run dev       # http://localhost:5174
-npm run verify    # typecheck + 154 tests + render smoke (with the orphan check) + production build
+npm run verify    # typecheck + 165 tests + render smoke (with the orphan check) + production build
 ```
 
 One entry point (`index.html`), one persona switcher standing in for Google's
@@ -54,10 +54,24 @@ show without a real OAuth flow.
 
 ## Done and verified
 
-`npm run verify` is green: **typecheck clean · 154 tests passing across 14
+`npm run verify` is green: **typecheck clean · 165 tests passing across 14
 files · every screen-level component under `src/ui/` renders, with markup
 checked for `NaN`/`undefined`/`[object Object]` · the orphan check (module-
 and screen-level) · production build succeeds.**
+
+Two of those smoke checks guard the privacy gates spec §13 names, and both
+carry their own positive control so they cannot pass vacuously:
+
+- **the D2 gate**, run as a pending viewer *and* as a signed-out one. Login's
+  demo-account roster is excluded **by name**, not by a blanket rule, and the
+  helper that excludes it throws if its marker moves rather than silently
+  widening.
+- **the contact-route gate** — a non-member's phone or email must not reach the
+  DOM before Apply is confirmed. It first asserts the set of routes it is
+  looking for is non-empty, then asserts their absence.
+
+Neither existed until the final review injected a live `tel:` link into the
+board's pre-confirm branch and watched the whole suite stay green.
 
 ### The three Lite decisions (design doc §3), and where they live
 
