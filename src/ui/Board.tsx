@@ -4,8 +4,9 @@ import type { JobPost, PosterRelationship } from '../data/schema.ts';
 import { relationshipBadge } from '../core/disclosure.ts';
 import { freshnessFor } from '../core/freshness.ts';
 import type { FreshnessState } from '../core/freshness.ts';
-import { EmptyState, Field, Select, Tabs } from './primitives.tsx';
+import { Button, EmptyState, Field, Select, Tabs } from './primitives.tsx';
 import { PostCard } from './PostCard.tsx';
+import { PostComposer } from './PostComposer.tsx';
 
 export interface BoardProps {
   now: number;
@@ -61,6 +62,7 @@ export function Board({ now, onOpenPost }: BoardProps) {
   const [freshness, setFreshness] = useState<FreshnessState | typeof ALL>(ALL);
   const [relationship, setRelationship] = useState<PosterRelationship | typeof ALL>(ALL);
   const [sort, setSort] = useState<SortMode>('default');
+  const [composerOpen, setComposerOpen] = useState(false);
 
   const functions = useMemo(
     () => Array.from(new Set(posts.map((p) => p.function).filter((f): f is string => Boolean(f)))).sort(),
@@ -152,7 +154,7 @@ export function Board({ now, onOpenPost }: BoardProps) {
           </Select>
         </Field>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
           <Tabs
             items={[
               { id: 'default', label: 'Connection first (default)' },
@@ -161,8 +163,17 @@ export function Board({ now, onOpenPost }: BoardProps) {
             active={sort}
             onChange={(id) => setSort(id as SortMode)}
           />
+          <Button variant="primary" onClick={() => setComposerOpen(true)}>
+            Post a job
+          </Button>
         </div>
       </div>
+
+      <PostComposer
+        open={composerOpen}
+        onClose={() => setComposerOpen(false)}
+        onPublished={() => setComposerOpen(false)}
+      />
 
       {filtered.length === 0 ? (
         <EmptyState title="No posts match those filters." />
