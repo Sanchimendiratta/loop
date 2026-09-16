@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { buildSeed } from '../src/data/seed.ts';
 import { isStale } from '../src/core/applications.ts';
 import { DAY_MS } from '../src/core/time.ts';
@@ -14,7 +14,22 @@ describe('the Lite demo workspace', () => {
   const s = buildSeed(NOW);
 
   test('it is deterministic for a fixed now', () => {
-    expect(JSON.stringify(buildSeed(NOW))).toBe(JSON.stringify(buildSeed(NOW)));
+    // Calling `buildSeed(NOW)` twice in the same millisecond of real wall
+    // time only catches `Math.random()` — a stray `Date.now()` inside
+    // `buildSeed` would happen to read the same millisecond too, and the
+    // test would pass for the wrong reason (a test that depends on being
+    // fast is not a test). So `Date.now` itself is mocked to return two
+    // deliberately different values across the two calls: if anything in
+    // `buildSeed` reads it instead of the `now` argument, the two builds
+    // embed different timestamps and the comparison below fails regardless
+    // of how much real time elapsed.
+    const spy = vi.spyOn(Date, 'now');
+    spy.mockReturnValueOnce(1_000_000_000);
+    const a = JSON.stringify(buildSeed(NOW));
+    spy.mockReturnValueOnce(2_000_000_000);
+    const b = JSON.stringify(buildSeed(NOW));
+    spy.mockRestore();
+    expect(a).toBe(b);
   });
 
   test('the five real messages are seeded as posts, byte for byte', () => {
@@ -48,6 +63,17 @@ describe('the Lite demo workspace', () => {
       expect(p.title, p.id).not.toMatch(/^for a |^Opening for/i);
       expect(p.title.length, p.id).toBeGreaterThan(3);
     }
+  });
+
+  test('a through_me post is seeded, so that route and the "Via" branch are exercised', () => {
+    const post = s.posts.find((p) => p.applyMethod === 'through_me');
+    expect(post).toBeDefined();
+    expect(post!.posterId).not.toBe(s.currentMemberId);
+    expect(post!.applyValue.trim().length).toBeGreaterThan(0);
+    // Someone applied to it, so the poster-route branch (Board) and the
+    // "Via <name>" branch (My applications) both actually render for the
+    // account the demo opens on, not just exist in the data unseen.
+    expect(s.applications.some((a) => a.jobPostId === post!.id && a.memberId === s.currentMemberId)).toBe(true);
   });
 
   test('a stale post exists so ageing is visible', () => {

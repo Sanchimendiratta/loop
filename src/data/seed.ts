@@ -7,15 +7,21 @@
  * `test/seed.test.ts` pins that with a `JSON.stringify` comparison — the store
  * and its tests depend on it.
  *
- * The five job posts are not invented: they are §5.0's real WhatsApp-forward
- * corpus, run through the actual parser (`parsePost`) so the demo exercises the
- * same code path a real paste would. Only what the parser cannot know — who
- * posted it, at what rung, the function, and (for the three that withhold the
- * company) the confidential descriptor — is filled in by hand. The titles are
- * hand-written too, deliberately: the parser's best guess at MSG_2 is "for a
- * Strategy role with…", which is a fragment, not a role. §9's rule is that the
- * parser pre-fills a form a human confirms, and this seed is what "a human
- * confirmed it" looks like.
+ * Five of the six job posts are not invented: they are §5.0's real
+ * WhatsApp-forward corpus, run through the actual parser (`parsePost`) so the
+ * demo exercises the same code path a real paste would. Only what the parser
+ * cannot know — who posted it, at what rung, the function, and (for the three
+ * that withhold the company) the confidential descriptor — is filled in by
+ * hand. The titles are hand-written too, deliberately: the parser's best
+ * guess at MSG_2 is "for a Strategy role with…", which is a fragment, not a
+ * role. §9's rule is that the parser pre-fills a form a human confirms, and
+ * this seed is what "a human confirmed it" looks like.
+ *
+ * The sixth post (`p_meridian`) has no raw message behind it: it is the one
+ * `through_me` listing, and the parser never produces that apply method, so
+ * there is nothing for it to parse. It is written out in full by hand instead
+ * — the same "human confirmed it" standard as the other five, just with no
+ * paste to confirm against.
  *
  * Lite has no duplicate-merge and therefore no `dedupeHash`: §1 drops it
  * outright below a few hundred posts, and §7's `job_post` has no such column.
@@ -197,7 +203,8 @@ export function buildSeed(now: number): AppState {
   ];
 
   // -------------------------------------------------------------------------
-  // Posts — §5.0's five real messages, parsed, with the four hand-filled fields.
+  // Posts — §5.0's five real messages, parsed, with the four hand-filled
+  // fields, plus one hand-authored `through_me` post (see the file docblock).
   //
   // All four connection values appear, so the board demonstrates its ranking.
   // One post is 34 days old so the greying is visible; one was posted today.
@@ -240,12 +247,37 @@ export function buildSeed(now: number): AppState {
       companyName: 'Anveshan',
       postedAt: now,
     }),
+    // `through_me` is the one apply method the parser can never produce — it
+    // is a poster saying "come through me personally", not a fact a pasted
+    // job ad states — so unlike the five above, this post is authored by
+    // hand rather than run through `postFromMessage`. That is exactly what a
+    // poster filling in the composer form themselves would produce, and it
+    // is the only way this apply method (and the "Via <name>" branch on My
+    // applications, and the poster-route branch on the board) is exercised
+    // anywhere in the demo. The title is written for the same reason every
+    // other title here is: it is what a human confirmed, not a parser guess.
+    {
+      id: 'p_meridian', posterId: 'm_karan',
+      title: 'Senior Manager – Growth',
+      companyName: 'Meridian Health', isConfidential: false, confidentialDescriptor: null,
+      function: 'Marketing & Brand', location: 'Mumbai', isRemote: false,
+      expMin: 6, expMax: 9, compText: '₹28-34L',
+      applyMethod: 'through_me',
+      applyValue: 'DM me on LinkedIn and I will pass your profile along.',
+      jdUrl: null,
+      note: 'I sit on the hiring panel — happy to answer questions before you reach out.',
+      connection: 'works_here', contactName: null, rawPaste: null,
+      postedAt: days(9), postStatus: 'open', lastConfirmedAt: days(9),
+    },
   ];
 
   // -------------------------------------------------------------------------
-  // Applications — Ananya's three span the ladder (one stale, one mid, one
-  // terminal), and Meera's post carries four so "My posts" has a row worth
-  // expanding.
+  // Applications — Ananya's first three span the ladder (one stale, one mid,
+  // one terminal), and Meera's post carries four so "My posts" has a row
+  // worth expanding. Ananya's fourth is on `p_meridian`, the `through_me`
+  // post, so both the poster-route branch on the board and the "Via <name>"
+  // branch on My applications actually render for the account the demo opens
+  // on, rather than sitting dead in the seed.
   // -------------------------------------------------------------------------
   const applications: Application[] = [
     {
@@ -272,6 +304,10 @@ export function buildSeed(now: number): AppState {
       id: 'a_6', jobPostId: 'p_foodhak', memberId: 'm_karan',
       appliedAt: days(17), status: 'no_response', statusUpdatedAt: days(6),
     },
+    {
+      id: 'a_7', jobPostId: 'p_meridian', memberId: 'm_ananya',
+      appliedAt: days(4), status: 'yet_to_respond', statusUpdatedAt: days(4),
+    },
   ];
 
   // -------------------------------------------------------------------------
@@ -283,7 +319,10 @@ export function buildSeed(now: number): AppState {
     {
       id: 'n_1', memberId: 'm_ananya', kind: 'you_were_verified',
       body: notificationBody('you_were_verified', {}), link: '/board',
-      readAt: days(199), pushedAt: days(200), emailedAt: null, at: days(200),
+      // `pushedAt` is null here like every other row: no code path in this
+      // build ever writes it (see schema.ts) — a real value would imply a
+      // push backend that does not exist.
+      readAt: days(199), pushedAt: null, emailedAt: null, at: days(200),
     },
     {
       id: 'n_2', memberId: 'm_ananya', kind: 'post_filled',

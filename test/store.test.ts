@@ -311,6 +311,43 @@ describe('verification', () => {
       (n) => n.memberId === pending.id && n.kind === 'you_were_verified')).toBe(true);
   });
 
+  test('a blank name is refused', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_blank_name', email: 'blank.name@astra.xlri.ac.in', name: '',
+      batch: 2020, programme: 'BM', linkedinUrl: 'https://linkedin.com/in/x', knownBy: null,
+    }, NOW))).toBe('missing_name');
+  });
+
+  test('a whitespace-only name is refused — trim before checking', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_ws_name', email: 'ws.name@astra.xlri.ac.in', name: '   ',
+      batch: 2020, programme: 'BM', linkedinUrl: 'https://linkedin.com/in/x', knownBy: null,
+    }, NOW))).toBe('missing_name');
+  });
+
+  test('a blank LinkedIn URL is refused', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_blank_li', email: 'blank.li@astra.xlri.ac.in', name: 'Someone',
+      batch: 2020, programme: 'BM', linkedinUrl: '', knownBy: null,
+    }, NOW))).toBe('missing_linkedin');
+  });
+
+  test('a whitespace-only LinkedIn URL is refused — trim before checking', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_ws_li', email: 'ws.li@astra.xlri.ac.in', name: 'Someone',
+      batch: 2020, programme: 'BM', linkedinUrl: '   ', knownBy: null,
+    }, NOW))).toBe('missing_linkedin');
+  });
+
+  test('neither refusal leaves a member row behind', () => {
+    const before = store.getState().members.length;
+    expect(() => store.submitVerification({
+      googleSub: 'g_refused', email: 'refused@astra.xlri.ac.in', name: '',
+      batch: 2020, programme: 'BM', linkedinUrl: '', knownBy: null,
+    }, NOW)).toThrow(RuleViolation);
+    expect(store.getState().members.length).toBe(before);
+  });
+
   test('a non-admin cannot decide a case', () => {
     const pending = store.getState().members.find((m) => m.status === 'pending')!;
     asMember((m) => m.status === 'verified' && !m.isAdmin);
@@ -325,11 +362,37 @@ describe('verification', () => {
     const decided = store.decidedCases();
     // A domain-verified member (e.g. the current admin, or Ananya) was never
     // ruled on by anyone, so it stays off this list despite status: 'verified'.
-    expect(decided.some((m) => m.verifiedBy === 'domain')).toBe(false);
+    // Checked by id against the full roster, not a `verifiedBy` field on the
+    // row itself — `decidedCases()` returns a narrowed `DecidedCase`
+    // projection (Fix 5) that deliberately does not carry `verifiedBy`.
+    const domainVerifiedIds = new Set(
+      store.getState().members.filter((m) => m.verifiedBy === 'domain').map((m) => m.id),
+    );
+    expect(decided.some((c) => domainVerifiedIds.has(c.id))).toBe(false);
     const row = decided.find((m) => m.id === pending.id)!;
     expect(row.status).toBe('rejected');
     expect(row.decidedById).toBe(admin.id);
     expect(row.decisionNote).toBe('No XLRI entry on LinkedIn.');
+  });
+
+  test('decidedCases returns a narrowed projection, not full member rows', () => {
+    // Fix 5: `decidedCases()` used to return `Member[]` — email and
+    // googleSub included — to a UI component that renders neither. `toEqual`
+    // against the exact expected shape catches a regression back to the full
+    // row, not just a missing field: an object with extra keys fails it too.
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+    const admin = asMember((m) => m.isAdmin);
+    store.decideVerification(pending.id, 'rejected', 'No XLRI entry on LinkedIn.', NOW);
+
+    const row = store.decidedCases().find((c) => c.id === pending.id)!;
+    expect(row).toEqual({
+      id: pending.id,
+      name: pending.name,
+      status: 'rejected',
+      decidedById: admin.id,
+      decidedAt: NOW,
+      decisionNote: 'No XLRI entry on LinkedIn.',
+    });
   });
 
   test('the decided list is admin-only, even for a verified member', () => {
@@ -402,6 +465,18 @@ describe('moderation', () => {
     asMember((m) => m.isAdmin);
     expect(store.listReports().some((x) => x.id === r.id)).toBe(true);
   });
+
+  test('reporting the same post twice is refused, the same way a second application is', () => {
+    const st = store.getState();
+    const post = st.posts.find((p) => p.posterId !== st.currentMemberId)!;
+    store.reportPost(post.id, 'Role was filled weeks ago.', NOW);
+    expect(violationCode(() => store.reportPost(post.id, 'Still bothers me.', NOW))).toBe('already_reported');
+    // Exactly one report from this member on this post, not two.
+    const mine = store.getState().reports.filter(
+      (r) => r.jobPostId === post.id && r.reporterId === st.currentMemberId,
+    );
+    expect(mine).toHaveLength(1);
+  });
 });
 
 describe('the bell', () => {
@@ -424,9 +499,26 @@ describe('the bell', () => {
   });
 
   test('a pending member cannot clear a bell they cannot read', () => {
-    asMember((m) => m.status === 'pending');
+    // The pending persona owns no notification in the seed, so the ownership
+    // filter in `markNotificationsRead` alone would satisfy this test without
+    // the D2 gate ever running. Give them one here, unread, so the only thing
+    // standing between it and `readAt !== null` is `viewerOrNull()` refusing
+    // a pending viewer. Verified by reverting the fix: swapping
+    // `viewerOrNull()` for an ungated lookup in `markNotificationsRead` turns
+    // this red (see fix-wave-1 report).
+    const pending = asMember((m) => m.status === 'pending');
+    const st = store.getState();
+    st.notifications = [
+      ...st.notifications,
+      {
+        id: 'n_pending_test', memberId: pending.id, kind: 'you_were_verified',
+        body: 'test', link: '/board', readAt: null, pushedAt: null, emailedAt: null, at: NOW,
+      },
+    ];
+
     store.markNotificationsRead(NOW);
-    expect(store.getState().notifications.some((n) => n.readAt === null)).toBe(true);
+
+    expect(store.getState().notifications.find((n) => n.id === 'n_pending_test')!.readAt).toBeNull();
   });
 });
 

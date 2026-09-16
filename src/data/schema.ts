@@ -3,7 +3,11 @@
  *
  * `verification_case` is folded into `member`: Lite has no appeals, and §7 says
  * a separate table only once appeals exist. `notification.emailed_at` is
- * reserved and unused so email can be switched on later without rework.
+ * reserved and unused so email can be switched on later without rework, and
+ * `notification.pushed_at` is reserved the same way: a real backend actually
+ * delivering a web push would stamp it, and nothing in this build does —
+ * `store.savePushSubscription` records an endpoint, but nothing ever sends to
+ * it.
  */
 
 export const CONNECTIONS = ['hiring', 'works_here', 'knows_contact', 'forwarded'] as const;
@@ -99,6 +103,7 @@ export interface Notification {
   body: string;
   link: string;
   readAt: number | null;
+  /** Reserved. Unused in Lite — a real backend delivering a push would stamp this; nothing in this build does. */
   pushedAt: number | null;
   /** Reserved. Unused in Lite so email can be switched on without rework (§5). */
   emailedAt: number | null;

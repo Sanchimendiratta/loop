@@ -432,7 +432,14 @@ export function myNotifications(): Notification[] {
     .sort((a, b) => b.at - a.at);
 }
 
-/** The admin queue. Admin-only, and still gated on the viewer being verified. */
+/**
+ * The admin queue. Admin-only, and still gated on the viewer being verified.
+ *
+ * Returns full `Member` rows, including `email` and `googleSub` — the same
+ * over-disclosure `decidedCases` was narrowed away from below. Left alone in
+ * this pass: `Admin.tsx`'s `QueueRow` takes `member: Member` as its prop type,
+ * so narrowing this return type is a UI change, out of this file's scope.
+ */
 export function pendingCases(): Member[] {
   const viewer = viewerOrNull();
   if (!viewer || !viewer.isAdmin) return [];
@@ -449,19 +456,42 @@ export function listReports(): Report[] {
     .sort((a, b) => b.at - a.at);
 }
 
+export interface DecidedCase {
+  id: string;
+  name: string;
+  status: MemberStatus;
+  decidedById: string | null;
+  decidedAt: number | null;
+  decisionNote: string;
+}
+
 /**
  * The audit trail beneath the queue: every case a human reviewer has actually
  * ruled on, newest first. `decidedById` is the filter rather than `status`
  * alone — an institute address in `submitVerification` also leaves `pending`
  * with `status: 'verified'`, but nobody decided it, so it does not belong on
  * a "who decided, when, why" list. Admin-only, same gate as `pendingCases`.
+ *
+ * Returns `DecidedCase`, not `Member` — the same narrowing `applicantsFor`
+ * does for `Applicant`. `Admin.tsx`'s audit trail renders a name, the
+ * decision, who decided it, when, and the note; it has no business handing
+ * that screen `email` or `googleSub` along with the rest of the row. Row
+ * scoping (admin-only) is not field scoping.
  */
-export function decidedCases(): Member[] {
+export function decidedCases(): DecidedCase[] {
   const viewer = viewerOrNull();
   if (!viewer || !viewer.isAdmin) return [];
   return getState()
     .members.filter((m) => m.decidedById !== null)
-    .sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0));
+    .sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0))
+    .map((m) => ({
+      id: m.id,
+      name: m.name,
+      status: m.status,
+      decidedById: m.decidedById,
+      decidedAt: m.decidedAt,
+      decisionNote: m.decisionNote,
+    }));
 }
 
 /**
@@ -526,8 +556,22 @@ export interface VerificationInput {
  * itself; everything else waits for a human, which is the whole of D2.
  *
  * Deliberately NOT viewer-gated: this is the one write a non-member makes.
+ *
+ * Two refusals, for the only two free-text fields a reviewer actually reads:
+ * a blank `name` renders an empty admin queue row, and a blank `linkedinUrl`
+ * renders `<a href="">`. `batch` and `programme` come off closed `<select>`s
+ * and can't be blank the same way, so they get no refusal here. Both trim
+ * before checking — whitespace is not presence. `linkedinUrl` stays a plain
+ * string otherwise: no format check, no fetch, per §7.4.
  */
 export function submitVerification(input: VerificationInput, now: number = Date.now()): Member {
+  if (!input.name?.trim()) {
+    throw new RuleViolation('Your name is required.', 'missing_name');
+  }
+  if (!input.linkedinUrl?.trim()) {
+    throw new RuleViolation('A LinkedIn URL is required.', 'missing_linkedin');
+  }
+
   const s = getState();
   const tier = tierForEmail(input.email, LOOP_SCHOOL);
   const verified = tier === 'A';
@@ -761,7 +805,14 @@ export function setPostStatus(postId: string, status: PostStatus, now: number = 
   return updated;
 }
 
-/** §4: a report link plus an admin delete is the whole moderation story. */
+/**
+ * §4: a report link plus an admin delete is the whole moderation story.
+ *
+ * A second report from the same member on the same post is refused, the same
+ * way `applyToPost` refuses a second application: without this, the same
+ * member re-clicking "Report" fills the admin queue with duplicates of a case
+ * that is already sitting there.
+ */
 export function reportPost(postId: string, reason: string, now: number = Date.now()): Report {
   const viewer = requireViewer();
   const s = getState();
@@ -769,6 +820,9 @@ export function reportPost(postId: string, reason: string, now: number = Date.no
   if (!post) throw new RuleViolation('No such post.', 'unknown_post');
   if (post.posterId === viewer.id) {
     throw new RuleViolation('You cannot report your own post.', 'self_report');
+  }
+  if (s.reports.some((r) => r.jobPostId === postId && r.reporterId === viewer.id)) {
+    throw new RuleViolation('You have already reported this post.', 'already_reported');
   }
   if (!reason?.trim()) {
     throw new RuleViolation('Say what is wrong with the post.', 'missing_reason');
