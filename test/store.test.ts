@@ -316,6 +316,26 @@ describe('verification', () => {
     asMember((m) => m.status === 'verified' && !m.isAdmin);
     expect(violationCode(() => store.decideVerification(pending.id, 'verified', 'x', NOW))).toBe('not_admin');
   });
+
+  test('the decided list carries only cases a reviewer actually ruled on', () => {
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+    const admin = asMember((m) => m.isAdmin);
+    store.decideVerification(pending.id, 'rejected', 'No XLRI entry on LinkedIn.', NOW);
+
+    const decided = store.decidedCases();
+    // A domain-verified member (e.g. the current admin, or Ananya) was never
+    // ruled on by anyone, so it stays off this list despite status: 'verified'.
+    expect(decided.some((m) => m.verifiedBy === 'domain')).toBe(false);
+    const row = decided.find((m) => m.id === pending.id)!;
+    expect(row.status).toBe('rejected');
+    expect(row.decidedById).toBe(admin.id);
+    expect(row.decisionNote).toBe('No XLRI entry on LinkedIn.');
+  });
+
+  test('the decided list is admin-only, even for a verified member', () => {
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    expect(store.decidedCases()).toEqual([]);
+  });
 });
 
 describe('publishing', () => {

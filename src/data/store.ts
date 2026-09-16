@@ -432,6 +432,21 @@ export function listReports(): Report[] {
 }
 
 /**
+ * The audit trail beneath the queue: every case a human reviewer has actually
+ * ruled on, newest first. `decidedById` is the filter rather than `status`
+ * alone — an institute address in `submitVerification` also leaves `pending`
+ * with `status: 'verified'`, but nobody decided it, so it does not belong on
+ * a "who decided, when, why" list. Admin-only, same gate as `pendingCases`.
+ */
+export function decidedCases(): Member[] {
+  const viewer = viewerOrNull();
+  if (!viewer || !viewer.isAdmin) return [];
+  return getState()
+    .members.filter((m) => m.decidedById !== null)
+    .sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0));
+}
+
+/**
  * Exactly what applying discloses, named by the store rather than by a screen.
  *
  * The consent line on the Apply dialog has to say what actually happens. If the
