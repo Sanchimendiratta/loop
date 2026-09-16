@@ -18,15 +18,16 @@
  *      and a delete.
  *
  * Approve commits in one tap — a low-stakes, reversible-by-re-review action.
- * Reject cannot be: there are no appeals in Lite (§3), so a rejection is the
- * one write here that permanently forecloses a path for someone else. It
- * gets a second, deliberate step — an inline row that requires typing a note
- * before a separate Confirm commits — rather than a plain click, and a
- * visually distinct (outlined, not filled) button so the two are never
- * mistaken for each other at a glance. Nothing here fetches, embeds or
- * previews the LinkedIn URL — it is a plain anchor the admin clicks
- * themselves, opening in a new tab, exactly like every other LinkedIn value
- * in this app (§7.4).
+ * Reject and delete do not get that treatment: neither has an undo anywhere
+ * in the store (Lite has no appeals, §3, and `deletePost` is unconditional),
+ * so both get the same second, deliberate step — an inline row that opens in
+ * place of a plain click and requires an explicit, separate Confirm before
+ * anything commits. Reject additionally requires typing the note the
+ * rejected member will read on their gate; delete does not, because the
+ * report it acts on already carries the reason — the extra step here is the
+ * point, not more typing. Nothing here fetches, embeds or previews the
+ * LinkedIn URL — it is a plain anchor the admin clicks themselves, opening in
+ * a new tab, exactly like every other LinkedIn value in this app (§7.4).
  */
 import { useState } from 'react';
 import type { FormEvent } from 'react';
@@ -278,45 +279,93 @@ function DecidedList({ now }: { now: number }) {
 }
 
 function ReportRow({ report, now }: { report: Report; now: number }) {
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const post = getPost(report.jobPostId);
+  const panelId = `admin-delete-${report.id}`;
 
-  function handleDelete(): void {
+  function openConfirm(): void {
+    setConfirming(true);
+    setError(null);
+  }
+
+  function cancelConfirm(): void {
+    setConfirming(false);
+    setError(null);
+  }
+
+  function confirmDelete(): void {
     try {
       deletePost(report.jobPostId, now);
-      setError(null);
+      // No `setConfirming(false)` needed on success: a successful delete
+      // resolves the report, so `listReports()` drops this row on the next
+      // read and this component unmounts along with it.
     } catch (err) {
       setError(err instanceof RuleViolation ? err.message : 'Something went wrong. Try again.');
     }
   }
 
   return (
-    <tr className="border-b border-stone-100 align-top last:border-b-0">
-      <td data-label="Post" className="px-3 py-3">
-        {post ? (
-          <>
-            <p className="font-medium text-stone-900">{post.title}</p>
-            {post.companyName ? <p className="text-xs text-stone-500">{post.companyName}</p> : null}
-          </>
-        ) : (
-          <span className="italic text-stone-400">This post no longer exists.</span>
-        )}
-      </td>
-      <td data-label="Reason" className="px-3 py-3 text-stone-700">
-        {report.reason}
-      </td>
-      <td data-label="Reported" className="px-3 py-3 tabular-nums text-stone-600">
-        {dayLabel(report.at, now)}
-      </td>
-      <td data-label="Action" className="px-3 py-3">
-        {post ? (
-          <Button type="button" size="sm" variant="danger" onClick={handleDelete}>
-            Delete post
-          </Button>
-        ) : null}
-        {error ? <p className="mt-1 text-xs font-medium text-[var(--color-owed)]">{error}</p> : null}
-      </td>
-    </tr>
+    <>
+      <tr className="border-b border-stone-100 align-top last:border-b-0">
+        <td data-label="Post" className="px-3 py-3">
+          {post ? (
+            <>
+              <p className="font-medium text-stone-900">{post.title}</p>
+              {post.companyName ? <p className="text-xs text-stone-500">{post.companyName}</p> : null}
+            </>
+          ) : (
+            <span className="italic text-stone-400">This post no longer exists.</span>
+          )}
+        </td>
+        <td data-label="Reason" className="px-3 py-3 text-stone-700">
+          {report.reason}
+        </td>
+        <td data-label="Reported" className="px-3 py-3 tabular-nums text-stone-600">
+          {dayLabel(report.at, now)}
+        </td>
+        <td data-label="Action" className="px-3 py-3">
+          {post ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="danger"
+              aria-expanded={confirming}
+              aria-controls={panelId}
+              onClick={confirming ? cancelConfirm : openConfirm}
+            >
+              Delete post
+            </Button>
+          ) : null}
+          {error && !confirming ? (
+            <p className="mt-1 text-xs font-medium text-[var(--color-owed)]">{error}</p>
+          ) : null}
+        </td>
+      </tr>
+
+      {confirming ? (
+        <tr id={panelId} className="border-b border-stone-100 bg-[var(--color-owed-soft)]">
+          <td colSpan={4} className="plain px-3 py-4">
+            <div className="max-w-xl">
+              <p className="text-sm font-semibold text-stone-900">Delete this post?</p>
+              <p className="mt-1 text-sm text-stone-700">
+                This removes it for every member, including anyone who applied. It cannot be undone — there
+                is no recovering it afterwards.
+              </p>
+              {error ? <p className="mt-2 text-sm font-medium text-[var(--color-owed)]">{error}</p> : null}
+              <div className="mt-3 flex gap-2">
+                <Button type="button" size="sm" variant="danger" onClick={confirmDelete}>
+                  Confirm delete
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={cancelConfirm}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }
 
