@@ -167,21 +167,49 @@ Seeker-side caps stay absent. DL1 was a decision about the full build, but Lite
 has no referral-request object to cap at all, so the question disappears rather
 than being re-answered.
 
-### 7.1 A deliberate privacy inversion, recorded
+### 7.1 Privacy is maintained, and Lite is the stronger position
 
-Lite §6's My-posts sheet shows the poster each applicant's **name, batch,
-programme and LinkedIn URL**. The full build's `PublicMember` type deliberately
-withholds exactly those fields, and I fixed a real defect on `main` to make it
-do so.
+There is an apparent conflict between Lite §6 — the My-posts sheet shows the
+poster each applicant's name, batch, programme and LinkedIn — and the full
+build's `PublicMember`, which deliberately withholds exactly those fields. It
+resolves cleanly once the distinction is stated:
 
-In Lite this disclosure is intended: you applied to someone's post, so the
-poster sees who applied. It is also the payoff §6 names as the thing that pulls
-posters off WhatsApp. But it is a reversal of a rule I treated as important, so
-it is written down here rather than arriving as a quiet type change.
+**D6 protects a seeker from the network at large, not from a person they
+deliberately approached.** Applying to a post is a voluntary, targeted
+disclosure to one poster. Being discoverable in a directory is not. Dropping the
+directory therefore *improves* the privacy position rather than weakening it:
+with no directory and no member search, **"you applied to my post" becomes the
+only path by which one member ever sees another's details.** On `main`, the
+directory is a second path. Lite has one.
 
-Scope of the reversal: **applicants are visible to the poster of the post they
-applied to, and to nobody else.** There is no directory and no member search, so
-this is the only path by which one member sees another's details.
+The rules, in order of importance:
+
+1. **Applicant details reach exactly one person** — the poster of the post
+   applied to. Not other applicants. Not an admin browsing the queue. Not a
+   count or aggregate that identifies who applied. Enforced in the store, not in
+   the sheet.
+2. **No disclosure by surprise.** Before Apply is confirmed, the member is shown
+   precisely which fields the poster will see: name, batch, programme, LinkedIn
+   URL, and their self-reported status. Applying is consent, and consent
+   requires knowing what is being consented to.
+3. **A standing reminder, not a buried one.** My applications states that the
+   poster of each role can see those fields. A member should be able to check
+   what they have given away without reconstructing it from memory.
+4. **D2 survives the deletion of `core/privacy.ts`.** An unverified or pending
+   account reads nothing — not posts, not members, not counts. The rule moves
+   into the store's viewer resolution so removing the module does not remove the
+   guarantee. The smoke script's D2 assertion is carried forward unchanged.
+5. **The contact route stays out of the DOM until Apply.** Kept from D13 even
+   though Lite drops the destination taxonomy: the hiring contact is a
+   non-member who never consented to appearing on a durable, searchable page.
+   Not hidden with CSS — absent until the tap.
+6. **Self-reporting refused, and reports do not expose the reporter** to the
+   member reported.
+
+What is *not* claimed: Lite has no confidential-search mode, because there is
+nothing public to be absent from. A member who applies has disclosed to that
+poster, and the product says so plainly rather than implying a protection it
+does not provide.
 
 ## 8. Data — six tables
 
@@ -212,7 +240,41 @@ server to send to it. This build has no backend (`localStorage` only). So:
 build cannot close that gap, and saying so is better than a fake that looks
 closed.
 
-## 10. Testing
+## 10. Interface quality — friendly by craft, not decoration
+
+Lite §6 is emphatic: "plain tables: sortable columns, filter chips above, no
+cards, no infinite scroll." That austerity is correct — a sheet is the right
+form for scanning twenty roles or tracking eight applications, and it is what
+the owner asked for. Friendly therefore means **well-made**, not decorated.
+
+The bar, and it is a requirement rather than a nicety:
+
+- **Readable density.** Generous row padding and line height; tabular numerals
+  for dates and year ranges so columns align; a clear type hierarchy so the role
+  title reads first and the metadata second.
+- **Plain language everywhere.** No jargon, no status codes shown raw. "Yet to
+  respond", not `YET_TO_RESPOND`.
+- **Empty states that say something true.** "Nothing here yet — post a role or
+  check back tomorrow", never a blank panel or a generic illustration. The
+  full build's "Nobody owes you anything right now" is the register to match.
+- **One tap, no ceremony.** Status changes commit immediately — no save button,
+  no modal, no page reload (Lite §6). Failure surfaces the store's own message
+  inline, next to the control that failed, not in a banner elsewhere.
+- **Keyboard and screen reader throughout.** Every control reachable by Tab in a
+  sensible order; real `<table>` semantics with `<th scope>` so a screen reader
+  announces column context; sort controls as buttons with `aria-sort`; the
+  Modal's focus trap carried over from `main`; visible focus rings everywhere.
+- **Mobile is a first-class layout, not a squeeze.** Lite is responsive web
+  only, and India-first means a lot of phones. Rows collapse into stacked
+  label/value pairs rather than scrolling sideways; filter chips wrap; the
+  status dropdown stays thumb-reachable.
+- **Nothing blocks on a spinner.** All data is local; a screen that appears to
+  load is lying about the work it is doing.
+
+None of this adds a screen or a feature. It is the difference between a table a
+person uses daily and one they abandon.
+
+## 11. Testing
 
 Vitest over `src/core`, carrying forward the suites that still apply (`time`,
 `parse`, `verification`, `rank`) and adding `applications` and `notifications`.
@@ -223,7 +285,7 @@ architecture guard (no `getState()`, `localStorage` or privacy imports in
 `src/ui/`), keeps the D2 assertion, and gains an **orphan check** failing on any
 module under `src/` that nothing imports — the guard against pruning vestiges.
 
-## 11. Build order
+## 12. Build order
 
 Lite §8's five steps, unchanged, because they are ordered by what can be demoed:
 
@@ -240,7 +302,7 @@ that can slip without blocking a launch, because six short fields can be typed.
 Since `parse.ts` already exists and is tested, step 5 is cheaper here than the
 Lite doc assumes.
 
-## 12. Success criteria
+## 13. Success criteria
 
 `npm run dev` brings Lite up; all eight screens are reachable; `npm run verify`
 passes (typecheck, unit tests, smoke with the orphan check, production build);
@@ -248,7 +310,18 @@ the five real §5.0 messages each publish from the paste box; and a member can
 walk login → board → apply → My applications → status change without touching a
 removed surface.
 
-## 13. Deliberately not built
+Two additional gates, from the owner's explicit requirements:
+
+- **Privacy holds.** An unverified viewer reads nothing (asserted in smoke); an
+  applicant's details are readable by that post's poster and by no other member
+  (asserted in the store suite); the contact route is absent from the DOM before
+  Apply; and the pre-Apply disclosure names every field the poster will see.
+- **The interface is usable, not merely correct.** Every sheet is navigable by
+  keyboard alone, announces column context to a screen reader, and renders
+  legibly at 390px wide. Checked by hand in a browser at both widths, reported
+  per screen, not asserted in the abstract.
+
+## 14. Deliberately not built
 
 No alumni directory. No searching for people. No messaging. No email. No
 resumes stored. No poster vetting. No automatic status — you tell it, it
