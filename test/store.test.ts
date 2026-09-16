@@ -175,6 +175,33 @@ describe('the tracker (spec §10)', () => {
       expect(req.seekerId === ananya.id || req.referrerId === ananya.id).toBe(true);
     }
   });
+
+  test('lastNudgedAt is the real, clock-maintained field — null until an actual nudge fires (Fix 7)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    store.setCurrentMember(ananya.id);
+    const company = store.listCompanies()[0];
+    const referrer = store.alumniAt(company.id).find((m) => m.id !== ananya.id && m.openToReferring)!;
+    const request = store.sendRequest({
+      referrerId: referrer.id, companyId: company.id, roleTitle: 'Nudge Honesty Test',
+      pitch: 'hi', roleUrl: null, jobPostId: null,
+    });
+
+    const beforeRow = store.trackerFor(ananya.id, request.updatedAt)
+      .find((r) => r.id === request.id)!;
+    expect(beforeRow.lastNudgedAt).toBeNull();
+
+    // Past the "sent" state's first nudge threshold (3 days), short of the
+    // 7-day auto-expiry — the clock should send exactly one nudge here.
+    const laterNow = request.updatedAt + 5 * DAY_MS;
+    store.runClock(laterNow);
+
+    const stored = store.getState().requests.find((r) => r.id === request.id)!;
+    expect(stored.lastNudgedAt).not.toBeNull();
+
+    const afterRow = store.trackerFor(ananya.id, laterNow).find((r) => r.id === request.id)!;
+    expect(afterRow.lastNudgedAt).toBe(stored.lastNudgedAt);
+  });
 });
 
 describe('the clock', () => {
@@ -552,5 +579,62 @@ describe('a suspended member’s posts come down too (Fix 5)', () => {
 
     store.setCurrentMember(admin.id);
     expect(store.getPost(post.id)?.id).toBe(post.id);
+  });
+});
+
+describe('recordPostView (Fix 8)', () => {
+  test('increments for a non-poster viewer and is a no-op for the poster', () => {
+    const post = store.getState().posts.find((p) => p.archivedAt === null)!;
+    const before = post.viewCount;
+
+    store.setCurrentMember(post.posterId);
+    store.recordPostView(post.id);
+    expect(store.getState().posts.find((p) => p.id === post.id)!.viewCount).toBe(before);
+
+    const viewer = store.getState().members.find(
+      (m) => m.status === 'verified' && m.id !== post.posterId,
+    )!;
+    store.setCurrentMember(viewer.id);
+    store.recordPostView(post.id);
+    expect(store.getState().posts.find((p) => p.id === post.id)!.viewCount).toBe(before + 1);
+  });
+});
+
+describe('requestContactRemoval is not gated to the poster or an admin (Fix 9)', () => {
+  test('any verified, non-poster, non-admin member may request it on the contact’s behalf', () => {
+    const post = store.getState().posts.find((p) => p.hiringContactValue !== null && p.archivedAt === null)!;
+    const outsider = store.getState().members.find(
+      (m) => m.status === 'verified' && !m.isAdmin && m.id !== post.posterId,
+    )!;
+    store.setCurrentMember(outsider.id);
+    expect(() => store.requestContactRemoval(post.id)).not.toThrow();
+
+    const updated = store.getState().posts.find((p) => p.id === post.id)!;
+    expect(updated.hiringContactValue).toBeNull();
+    expect(updated.contactRemovalRequestedAt).not.toBeNull();
+  });
+});
+
+describe('referralAvailabilityFor refuses a suspended target (Fix 10)', () => {
+  test('a suspended member reads as not accepting, even though openToReferring/caps are untouched', () => {
+    const referrer = store.getState().members.find((m) => m.openToReferring && m.status === 'verified')!;
+    const reporter = store.getState().members.find(
+      (m) => m.status === 'verified' && !m.isAdmin && m.id !== referrer.id,
+    )!;
+    const admin = store.getState().members.find((m) => m.isAdmin)!;
+
+    store.setCurrentMember(reporter.id);
+    const report = store.reportTarget('member', referrer.id, 'Spamming the board.');
+    store.setCurrentMember(admin.id);
+    store.upholdReport(report.id);
+
+    const suspended = store.getState().members.find((m) => m.id === referrer.id)!;
+    expect(suspended.status).toBe('suspended');
+    expect(suspended.openToReferring).toBe(true); // untouched by suspension
+
+    store.setCurrentMember(reporter.id);
+    const availability = store.referralAvailabilityFor(referrer.id, NOW);
+    expect(availability.accepting).toBe(false);
+    expect(availability.reason).toBe('not_open');
   });
 });

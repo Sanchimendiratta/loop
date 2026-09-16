@@ -218,8 +218,6 @@ export function RequestDetail({ requestId, now, onClose }: RequestDetailProps) {
             <span className="text-xs font-medium text-[var(--color-owed)]">You owe the next update.</span>
           ) : owed === 'them' ? (
             <span className="text-xs text-stone-500">Waiting on {counterparty?.name ?? 'the other side'}.</span>
-          ) : role === null ? (
-            <span className="text-xs text-stone-500">You are viewing this as an admin.</span>
           ) : null}
         </div>
 

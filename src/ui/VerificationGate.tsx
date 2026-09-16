@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { getCurrentMember, myVerificationCase, RuleViolation, submitAppeal } from '../data/store.ts';
 import type { VerificationCase } from '../data/schema.ts';
+import { canAppeal } from '../core/verification.ts';
 import { Button, Card, cx, Field, Input } from './primitives.tsx';
 
 /**
@@ -57,11 +58,11 @@ export function VerificationGate({ children }: { children: ReactNode }) {
 
   if (member.status === 'rejected') {
     const c = myVerificationCase();
-    const canAppeal = c !== null && c.decision === 'rejected' && !c.isAppeal;
+    const mayAppeal = c !== null && canAppeal(c);
     return (
       <GateScreen title="We couldn't verify your account" tone="stop">
         <p>{c?.notes || 'No reason was recorded for this decision.'}</p>
-        {canAppeal ? (
+        {mayAppeal ? (
           <AppealForm evidence={c.evidence} />
         ) : (
           <p className="text-xs text-stone-500">

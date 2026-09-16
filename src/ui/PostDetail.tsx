@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   alumniAt,
   applicationsFor,
@@ -10,6 +10,7 @@ import {
   getPost,
   listCompanies,
   posterStatsFor,
+  recordPostView,
   referralAvailabilityFor,
   reportTarget,
   requestContactRemoval,
@@ -54,6 +55,13 @@ export function PostDetail({ postId, now, onClose, onRequestReferral }: PostDeta
   const [reportReason, setReportReason] = useState('');
   const [reportError, setReportError] = useState<string | null>(null);
   const [justReported, setJustReported] = useState(false);
+
+  // §5.1: one view, recorded once per mount — not per render, and not for a
+  // post that turns out not to exist or not to be visible (`recordPostView`
+  // itself no-ops for both, and for the poster viewing their own post).
+  useEffect(() => {
+    recordPostView(postId);
+  }, [postId]);
 
   const post = getPost(postId);
   const viewer = getCurrentMember();
@@ -329,8 +337,12 @@ export function PostDetail({ postId, now, onClose, onRequestReferral }: PostDeta
         ) : null}
 
         {/* D13: a named contact who never asked to be on a job board can have
-            their details taken down — reachable from every post carrying one,
-            not just the poster's own view. */}
+            their details taken down — reachable from every post carrying
+            one, not just the poster's own view, and callable by any verified
+            member, not just the poster or an admin. The store guard now
+            matches this: the listed contact is not a member at all (D15),
+            so a poster-only guard would make this unreachable for the one
+            person the 48h promise is actually made to. */}
         {hasNamedContact ? (
           <div className="border-t border-stone-200 pt-2">
             <button

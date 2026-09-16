@@ -115,6 +115,12 @@ export interface TrackerRow {
   owed: 'you' | 'them' | 'nobody';
   dueAt: number | null;
   overdueDays: number;
+  /** Real, store-maintained state (`ReferralRequest.lastNudgedAt`) — never
+   * derived from `overdueDays`, which is days past the due date and has no
+   * relationship to whether a nudge was ever sent. `null` for a request that
+   * has never been nudged, and always `null` for the `application`/`post`
+   * kinds, which the clock never nudges at all. */
+  lastNudgedAt: number | null;
   cta: { label: string; action: string } | null;
 }
 
@@ -442,6 +448,12 @@ export function referralAvailabilityFor(memberId: string, now: number = Date.now
   if (!viewer) return { accepting: false, reason: null };
   const target = getState().members.find((m) => m.id === memberId);
   if (!target || !canSeeMember(viewer, target)) return { accepting: false, reason: null };
+  // `upholdReport` suspends a member and freezes their requests, but never
+  // touches `openToReferring` or `caps` — `intakeCheck` alone would keep
+  // reading whatever intake state they had before suspension. Checked here,
+  // ahead of `intakeCheck`, so a suspension always reads as "not open to
+  // referring" (a reason the UI already renders) regardless of their caps.
+  if (target.status === 'suspended') return { accepting: false, reason: 'not_open' };
   const { accepting, reason } = intakeCheck(target, getState().requests, now);
   return { accepting, reason: reason as ReferralAvailability['reason'] };
 }
@@ -782,17 +794,39 @@ export function flagUnreachable(postId: string): JobPost {
 }
 
 /**
+ * §5.1: the poster's own view count — one of the three numbers on the
+ * poster dashboard, previously initialised to 0 and never incremented.
+ * Viewer-scoped like a read (silently does nothing rather than throwing)
+ * because a page view is not a rule a caller needs to react to failing: no
+ * viewer, or a post not visible to them, is simply not a view. A no-op when
+ * the viewer is the post's own poster — checking your own post is not a
+ * view of it. No per-viewer dedup: a raw counter, not analytics.
+ */
+export function recordPostView(postId: string): void {
+  const viewer = viewerOrNull();
+  if (!viewer) return;
+  const post = postsVisibleTo(viewer, getState()).find((p) => p.id === postId);
+  if (!post || post.posterId === viewer.id) return;
+  replacePost({ ...post, viewCount: post.viewCount + 1 });
+}
+
+/**
  * D13: a named contact who never asked to be on a job board can have their
  * details taken down. Honoured immediately rather than queued, because the
  * harm is the details being served, and a queue keeps serving them. A
  * `named_person` card is archived too: its only apply route WAS that person.
+ *
+ * Deliberately not restricted to the poster or an admin: by D15 the LISTED
+ * CONTACT is not a member at all, so a poster-only guard would make D13's
+ * "honoured within 48h" promise unreachable for the one person it is made
+ * to. In a real deployment this is the unauthenticated route a non-member
+ * contact reaches directly; the nearest honest thing here, with no such
+ * route, is that any verified member may request removal on a contact's
+ * behalf — a takedown request is not a privilege to gate.
  */
 export function requestContactRemoval(postId: string): JobPost {
   const viewer = requireViewer();
   const post = requirePostForWrite(postId, viewer);
-  if (post.posterId !== viewer.id && !viewer.isAdmin) {
-    throw new RuleViolation('Ask an admin to take a contact down.', 'not_poster');
-  }
   const now = Date.now();
   return replacePost({
     ...post,
@@ -1411,6 +1445,7 @@ export function trackerFor(memberId: string, now: number): TrackerRow[] {
       owed,
       dueAt: r.nextUpdateDue,
       overdueDays: r.nextUpdateDue === null ? 0 : daysBetween(r.nextUpdateDue, now),
+      lastNudgedAt: r.lastNudgedAt,
       cta,
     });
   }
@@ -1432,6 +1467,7 @@ export function trackerFor(memberId: string, now: number): TrackerRow[] {
       owed: 'you',
       dueAt,
       overdueDays: daysBetween(dueAt, now),
+      lastNudgedAt: null,
       cta: { label: 'Did you hear back?', action: 'record_application_outcome' },
     });
   }
@@ -1453,6 +1489,7 @@ export function trackerFor(memberId: string, now: number): TrackerRow[] {
       owed: 'you',
       dueAt,
       overdueDays: daysBetween(dueAt, now),
+      lastNudgedAt: null,
       cta: { label: 'Still open?', action: 'confirm_post' },
     });
   }

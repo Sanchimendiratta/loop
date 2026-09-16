@@ -39,7 +39,11 @@ const EXP_BANDS: ExpBand[] = [
 ];
 
 function inBand(post: JobPost, band: ExpBand): boolean {
-  if (post.expMin === null && post.expMax === null) return false;
+  // DL5: `parse.ts` deliberately leaves a low-confidence experience field
+  // empty rather than guessing, and that is a real share of real posts — not
+  // a reason to drop them from every band. A post with no stated experience
+  // passes any band filter instead of failing all of them.
+  if (post.expMin === null && post.expMax === null) return true;
   const postMin = post.expMin ?? post.expMax ?? 0;
   const postMax = post.expMax ?? post.expMin ?? Infinity;
   return postMin <= band.max && postMax >= band.min;

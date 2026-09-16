@@ -12,6 +12,7 @@ import {
 import type { TrackerRow } from '../data/store.ts';
 import type { ApplicationOutcome } from '../data/schema.ts';
 import { freshnessFor } from '../core/freshness.ts';
+import { daysBetween } from '../core/time.ts';
 import { Button, Card, Chip, EmptyState, TONE } from './primitives.tsx';
 import type { Tone } from './primitives.tsx';
 
@@ -195,10 +196,18 @@ export function Tracker({ now, onOpenRequest, onOpenPost }: TrackerProps) {
           <Card>
             <ul className="divide-y divide-stone-200">
               {waitingOnOthers.map((row) => {
+                // §10's worked example ("nudged 2 days ago") describes an
+                // actual nudge, not days-past-due — `overdueDays` alone says
+                // nothing about whether anyone was nudged at all. Only claim
+                // a nudge when `lastNudgedAt` (the clock-maintained field)
+                // says one really happened.
+                const nudgedDaysAgo = row.lastNudgedAt === null ? null : daysBetween(row.lastNudgedAt, now);
                 const since =
-                  row.overdueDays > 0
-                    ? `nudged ${row.overdueDays} day${row.overdueDays === 1 ? '' : 's'} ago`
-                    : 'waiting for a reply';
+                  nudgedDaysAgo !== null
+                    ? `nudged ${nudgedDaysAgo} day${nudgedDaysAgo === 1 ? '' : 's'} ago`
+                    : row.overdueDays > 0
+                      ? `waiting ${row.overdueDays} day${row.overdueDays === 1 ? '' : 's'}`
+                      : 'waiting for a reply';
                 return (
                   <li key={row.id}>
                     <RowShell
