@@ -157,7 +157,7 @@ const AppMod = await load('/src/ui/App.tsx');
 renderScreen('App', AppMod, 'App', {});
 
 const BoardMod = await load('/src/ui/Board.tsx');
-renderScreen('Board', BoardMod, 'Board', { now, onOpenPost: noop });
+renderScreen('Board', BoardMod, 'Board', { now });
 
 const PostComposerMod = await load('/src/ui/PostComposer.tsx');
 renderScreen('PostComposer', PostComposerMod, 'PostComposer', { open: true, onClose: noop, onPublished: noop });

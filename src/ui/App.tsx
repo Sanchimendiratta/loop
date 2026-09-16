@@ -116,10 +116,10 @@ export function App() {
       <div className="min-h-0 flex-1">
         <VerificationGate>
           <Shell nav={nav} active={view} onNavigate={handleNavigate}>
-            {/* No detail screen — Task 8 rewrites the board to expand a row
-                in place instead, so there is nothing yet for a post id to
-                open into. */}
-            {view === 'board' ? <Board now={now} onOpenPost={() => {}} /> : null}
+            {/* No detail screen — Task 8 rewrote the board to expand a row
+                in place instead, so there is nothing for a post id to open
+                into. */}
+            {view === 'board' ? <Board now={now} /> : null}
             {view === 'applications' ? (
               <MyApplications now={now} onBrowseBoard={() => setView('board')} />
             ) : null}

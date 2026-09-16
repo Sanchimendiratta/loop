@@ -19,13 +19,6 @@ import { PostComposer } from './PostComposer.tsx';
 
 export interface BoardProps {
   now: number;
-  /**
-   * Retained for the smoke script's and `App`'s prop contract from before this
-   * rewrite. Lite has no detail screen — Apply expands the row in place — so
-   * there is nothing left for a post id to open into, and this is
-   * deliberately unused below.
-   */
-  onOpenPost: (postId: string) => void;
 }
 
 const ALL = 'all';

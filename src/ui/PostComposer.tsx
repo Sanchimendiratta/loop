@@ -5,6 +5,7 @@ import type { PostDraft } from '../data/store.ts';
 import { APPLY_METHODS, CONNECTIONS, FUNCTIONS } from '../data/schema.ts';
 import type { ApplyMethod, Connection, FunctionArea, JobPost } from '../data/schema.ts';
 import { MIN_CONFIDENCE, parsePost } from '../core/parse.ts';
+import type { ParsedPost } from '../core/parse.ts';
 import { connectionBadge, connectionLine } from '../core/disclosure.ts';
 import { useNow } from './useStore.ts';
 import { Button, Field, Input, Modal, Select, Textarea } from './primitives.tsx';
@@ -47,7 +48,7 @@ const FIELD_FOR_CODE: Record<string, string> = {
   missing_descriptor: 'confidentialDescriptor',
 };
 
-interface FormState {
+export interface FormState {
   pasteText: string;
   rawPaste: string | null;
   overallConfidence: number | null;
@@ -76,7 +77,7 @@ interface FormState {
   contactName: string;
 }
 
-const EMPTY_FORM: FormState = {
+export const EMPTY_FORM: FormState = {
   pasteText: '',
   rawPaste: null,
   overallConfidence: null,
@@ -107,6 +108,131 @@ const EMPTY_FORM: FormState = {
 
 function sourceHint(source: string): string {
   return `From the paste: "${source}"`;
+}
+
+/**
+ * Which `*Source` hint a directly-typed field corresponds to. The moment a
+ * poster edits the field itself, the value is theirs, not the paste's — so
+ * the dimmed source line underneath must go with it, or it becomes a false
+ * claim: "From the paste" quoting text for a value the poster typed over.
+ */
+type SourceKey =
+  | 'titleSource'
+  | 'companySource'
+  | 'locationSource'
+  | 'expSource'
+  | 'compSource'
+  | 'applyValueSource'
+  | 'jdUrlSource';
+
+const SOURCE_KEY_FOR_FIELD: Partial<Record<keyof FormState, SourceKey>> = {
+  title: 'titleSource',
+  companyName: 'companySource',
+  location: 'locationSource',
+  expMin: 'expSource',
+  expMax: 'expSource',
+  compText: 'compSource',
+  applyValue: 'applyValueSource',
+  jdUrl: 'jdUrlSource',
+};
+
+/**
+ * A poster editing a field directly, pure. Exported so `test/` can pin its
+ * one job without a DOM: clear the matching `*Source` the instant the value
+ * it describes changes hands from the paste to the poster, so a stale hint
+ * can never sit under a value the poster typed themselves.
+ */
+export function editField<K extends keyof FormState>(f: FormState, key: K, value: FormState[K]): FormState {
+  const next = { ...f, [key]: value };
+  const sourceKey = SOURCE_KEY_FOR_FIELD[key];
+  if (sourceKey) next[sourceKey] = null;
+  return next;
+}
+
+/**
+ * Accepting a parse into the form, pure — the reducer `runParse` runs inside
+ * `setForm`. Exported so `test/` can pin both of its rules without a DOM:
+ *
+ *   - the new parse DID find the field: fill it, and record the new source —
+ *     this can overwrite a still-paste-sourced value from an earlier, weaker
+ *     parse, which is correct (a second, better paste should win).
+ *   - the new parse did NOT find the field, but the field is still
+ *     paste-sourced (`f.XSource != null`, i.e. never hand-edited since the
+ *     last accepted parse, per `editField` above): clear both the value and
+ *     the source. A worse re-paste must not leave the previous parse's guess
+ *     sitting in the form with no source line left to explain where it came
+ *     from.
+ *
+ * A field the poster typed by hand is untouched either way, because
+ * `editField` already nulled its source the moment they typed — this
+ * function never even considers it stale.
+ */
+export function mergeParsedIntoForm(f: FormState, text: string, parsed: ParsedPost): FormState {
+  const next: FormState = { ...f, pasteText: text, rawPaste: text, overallConfidence: parsed.overallConfidence };
+
+  if (parsed.title.value) {
+    next.title = parsed.title.value;
+    next.titleSource = parsed.title.source;
+  } else if (f.titleSource) {
+    next.title = '';
+    next.titleSource = null;
+  }
+
+  if (parsed.company.value) {
+    next.companyName = parsed.company.value;
+    next.companySource = parsed.company.source;
+  } else if (f.companySource) {
+    next.companyName = '';
+    next.companySource = null;
+  }
+
+  if (parsed.locations.value?.length) {
+    const remote = parsed.locations.value.includes('Remote');
+    const rest = parsed.locations.value.filter((l) => l !== 'Remote');
+    next.location = rest.join(', ');
+    next.isRemote = remote || f.isRemote;
+    next.locationSource = parsed.locations.source;
+  } else if (f.locationSource) {
+    next.location = '';
+    next.locationSource = null;
+  }
+
+  if (parsed.experience.value) {
+    next.expMin = String(parsed.experience.value.min);
+    next.expMax = String(parsed.experience.value.max);
+    next.expSource = parsed.experience.source;
+  } else if (f.expSource) {
+    next.expMin = '';
+    next.expMax = '';
+    next.expSource = null;
+  }
+
+  if (parsed.compensation.value) {
+    next.compText = parsed.compensation.value;
+    next.compSource = parsed.compensation.source;
+  } else if (f.compSource) {
+    next.compText = '';
+    next.compSource = null;
+  }
+
+  if (parsed.applyMethod.value) next.applyMethod = parsed.applyMethod.value;
+  if (parsed.applyValue.value) {
+    next.applyValue = parsed.applyValue.value;
+    next.applyValueSource = parsed.applyValue.source;
+  } else if (f.applyValueSource) {
+    next.applyValue = '';
+    next.applyValueSource = null;
+  }
+
+  if (parsed.jdUrl.value) {
+    next.jdUrl = parsed.jdUrl.value;
+    next.jdUrlSource = parsed.jdUrl.source;
+  } else if (f.jdUrlSource) {
+    next.jdUrl = '';
+    next.jdUrlSource = null;
+  }
+
+  return next;
 }
 
 function ErrorText({ children }: { children: ReactNode }) {
@@ -162,54 +288,13 @@ export function PostComposer({ open, onClose, onPublished }: PostComposerProps) 
   }, [open]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]): void {
-    setForm((f) => ({ ...f, [key]: value }));
+    setForm((f) => editField(f, key, value));
   }
 
-  /**
-   * The single choke point for accepting a parse: only fields `parsePost`
-   * actually filled are written into the form, so an earlier manual edit — or
-   * an earlier, better paste — is never silently clobbered by a paste that
-   * found less.
-   */
+  /** The single choke point for accepting a parse — see `mergeParsedIntoForm` for the rules. */
   function runParse(text: string): void {
     const parsed = parsePost(text);
-    setForm((f) => {
-      const next: FormState = { ...f, pasteText: text, rawPaste: text, overallConfidence: parsed.overallConfidence };
-      if (parsed.title.value) {
-        next.title = parsed.title.value;
-        next.titleSource = parsed.title.source;
-      }
-      if (parsed.company.value) {
-        next.companyName = parsed.company.value;
-        next.companySource = parsed.company.source;
-      }
-      if (parsed.locations.value?.length) {
-        const remote = parsed.locations.value.includes('Remote');
-        const rest = parsed.locations.value.filter((l) => l !== 'Remote');
-        next.location = rest.join(', ');
-        next.isRemote = remote || f.isRemote;
-        next.locationSource = parsed.locations.source;
-      }
-      if (parsed.experience.value) {
-        next.expMin = String(parsed.experience.value.min);
-        next.expMax = String(parsed.experience.value.max);
-        next.expSource = parsed.experience.source;
-      }
-      if (parsed.compensation.value) {
-        next.compText = parsed.compensation.value;
-        next.compSource = parsed.compensation.source;
-      }
-      if (parsed.applyMethod.value) next.applyMethod = parsed.applyMethod.value;
-      if (parsed.applyValue.value) {
-        next.applyValue = parsed.applyValue.value;
-        next.applyValueSource = parsed.applyValue.source;
-      }
-      if (parsed.jdUrl.value) {
-        next.jdUrl = parsed.jdUrl.value;
-        next.jdUrlSource = parsed.jdUrl.source;
-      }
-      return next;
-    });
+    setForm((f) => mergeParsedIntoForm(f, text, parsed));
   }
 
   /** Fills the form the moment the paste lands — no extra click for the common case. */
