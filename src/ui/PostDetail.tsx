@@ -225,10 +225,13 @@ export function PostDetail({ postId, now, onClose, onRequestReferral }: PostDeta
           </div>
         ) : null}
 
-        {/* D13: the apply boundary. Nothing about the hiring contact renders
-            anywhere below — not the name, not the value, not in a title or
-            alt attribute, not visually hidden — until `applyToPost` has
-            actually been called for this viewer. */}
+        {/* D13: the apply boundary. Only the hiring contact's VALUE is gated
+            here — not the name, not in a title or alt attribute, not
+            visually hidden — until `applyToPost` has actually been called
+            for this viewer. The contact's name is deliberately shown
+            already, above, in the disclosure sentence ("knows Nikita, who is
+            hiring") per §5.1's worked example, and on every Board card; it
+            is the value below that stays gated until the viewer applies. */}
         {!isPoster ? (
           <div className="flex flex-col gap-2 rounded-lg p-3 ring-1 ring-stone-200">
             {!revealed ? (

@@ -346,8 +346,16 @@ function toPublicMember(viewer: Member, m: Member): PublicMember {
   return { ...rest, email: viewer.id === m.id ? email : null };
 }
 
-/** A post whose poster is invisible to the viewer is invisible too: a blocked
- * member must not be discoverable via their own posts (§6/D6). */
+/**
+ * A post whose poster is invisible to the viewer is invisible too: a blocked
+ * member must not be discoverable via their own posts (§6/D6).
+ *
+ * This is the single source of truth for post visibility. Every read of
+ * `s.posts` — stats, the tracker, write guards, the digest, the board —
+ * must come from here rather than re-deriving the rule against `s.posts`
+ * directly. A second predicate drifts the moment one of these conditions
+ * changes; it already did, four times, before this comment existed.
+ */
 function postsVisibleTo(viewer: Member, s: AppState): JobPost[] {
   const byId = new Map(s.members.map((m) => [m.id, m]));
   return s.posts.filter((p) => {
@@ -358,7 +366,12 @@ function postsVisibleTo(viewer: Member, s: AppState): JobPost[] {
     // bypass of a blocking member's row (checked below regardless).
     if (postHasOpenReport(p.id, s) && !viewer.isAdmin) return false;
     const poster = byId.get(p.posterId);
-    return poster ? canSeeMember(viewer, poster) : false;
+    if (!poster) return false;
+    // A suspended poster's posts come down too, for everyone but an admin —
+    // otherwise upholding a report against a spammer leaves every other post
+    // they made on the board, removable only one report at a time.
+    if (poster.status === 'suspended' && !viewer.isAdmin) return false;
+    return canSeeMember(viewer, poster);
   });
 }
 
@@ -502,7 +515,10 @@ export function posterStatsFor(postId: string): PostStats {
   const viewer = viewerOrNull();
   if (!viewer) return empty;
   const s = getState();
-  const post = s.posts.find((p) => p.id === postId);
+  // Routed through `postsVisibleTo` rather than `s.posts.find` directly: a
+  // post hidden by an open report must not surface its counts either, or a
+  // poster's own stats panel would keep counting a post nobody else can open.
+  const post = postsVisibleTo(viewer, s).find((p) => p.id === postId);
   if (!post) return empty;
   const apps = s.applications.filter((a) => a.jobPostId === postId);
   const heardBackOutcomes: ApplicationOutcome[] = ['responded', 'interviewing', 'offer', 'rejected'];
@@ -578,9 +594,14 @@ export function whatsappDigest(now: number): string {
 
 const CONSENT_REQUIRED_DESTINATIONS: DestinationType[] = ['named_person', 'external_recruiter'];
 
-function livePostByHash(hash: string, s: AppState): JobPost | null {
+// The real archive rule (`freshnessFor(...).shouldArchive`, the same one
+// `runClock` uses), not a second guess at it. `reset()` deliberately never
+// runs the clock, so a day-45+ post can sit un-archived in the seed; a merge
+// target check that only asked `confirmState !== 'filled'` would happily
+// merge a new forward into a post that is one clock tick from disappearing.
+function livePostByHash(hash: string, s: AppState, now: number): JobPost | null {
   return (
-    s.posts.find((p) => p.dedupeHash === hash && p.archivedAt === null && p.confirmState !== 'filled') ?? null
+    s.posts.find((p) => p.dedupeHash === hash && p.archivedAt === null && !freshnessFor(p, now).shouldArchive) ?? null
   );
 }
 
@@ -609,7 +630,7 @@ export function publishPost(draft: PostDraft): JobPost {
   }
 
   const hash = dedupeHash(draft.applyValue, draft.title);
-  const existing = livePostByHash(hash, s);
+  const existing = livePostByHash(hash, s, now);
 
   if (existing) {
     // §5.1: four alumni forwarding the same JD is corroboration, not clutter.
@@ -673,12 +694,17 @@ function replacePost(next: JobPost): JobPost {
   return next;
 }
 
+// Routed through `postsVisibleTo` — the same gate the read path uses — rather
+// than a second, looser predicate. There is deliberately no `?? viewer`
+// fallback: a post whose poster cannot be resolved, or is not visible to this
+// viewer for any reason `postsVisibleTo` recognises (a report pending review,
+// a blocking member, a suspended poster), fails closed here exactly as it
+// does on read. The read path failing closed while the write path failed
+// open was the bug: `confirmPost`, `applyToPost` and `flagUnreachable` all
+// still succeeded against a post that had already vanished from the board.
 function requirePostForWrite(postId: string, viewer: Member): JobPost {
-  const post = getState().posts.find((p) => p.id === postId);
+  const post = postsVisibleTo(viewer, getState()).find((p) => p.id === postId);
   if (!post) throw new RuleViolation('No such post.', 'unknown_post');
-  if (!canSeeMember(viewer, getState().members.find((m) => m.id === post.posterId) ?? viewer)) {
-    throw new RuleViolation('No such post.', 'unknown_post');
-  }
   return post;
 }
 
@@ -979,6 +1005,15 @@ export function setProfile(fields: ProfileEdit): Member {
   }
   if (!fields.programme.trim()) {
     throw new RuleViolation('A profile needs a programme.', 'missing_programme');
+  }
+  // `Number('') === 0`, and an `<input type="number">` yields `''` for any
+  // invalid entry — so clearing the field would otherwise write a phantom
+  // `0` rather than throwing. That `0` would then appear in the directory's
+  // batch filter and render as "PGDM · 0". Validated here, at the store
+  // boundary, rather than silently clamped: a silently discarded edit is its
+  // own bug.
+  if (!Number.isFinite(fields.batch) || fields.batch < 1950 || fields.batch > 2100) {
+    throw new RuleViolation('Give a graduation year between 1950 and 2100.', 'invalid_batch');
   }
   return replaceMember({
     ...viewer,
@@ -1345,6 +1380,11 @@ export function trackerFor(memberId: string, now: number): TrackerRow[] {
     const m = s.members.find((x) => x.id === id);
     return m && canSeeMember(viewer, m) ? m.name : null;
   };
+  // Routed through `postsVisibleTo` rather than reading `s.posts` raw below,
+  // so a post hidden by an open report (or a suspended poster) drops off the
+  // owner's own tracker the same moment it drops off the board — instead of
+  // going on showing a "confirmation due" row for a card nobody else can see.
+  const visiblePostById = new Map(postsVisibleTo(viewer, s).map((p) => [p.id, p]));
   const rows: TrackerRow[] = [];
 
   // 1. Requests the member is party to. `visibleRequests` first, so the
@@ -1380,7 +1420,7 @@ export function trackerFor(memberId: string, now: number): TrackerRow[] {
   for (const a of s.applications) {
     if (a.memberId !== memberId) continue;
     if (!applicationPromptDue(a, now)) continue;
-    const post = s.posts.find((p) => p.id === a.jobPostId);
+    const post = visiblePostById.get(a.jobPostId) ?? null;
     const dueAt = addDays(a.appliedAt, APPLICATION_PROMPT_DAY);
     rows.push({
       id: a.id,
@@ -1397,7 +1437,7 @@ export function trackerFor(memberId: string, now: number): TrackerRow[] {
   }
 
   // 3. Their own posts needing confirmation (D14: confirm-or-decay).
-  for (const p of s.posts) {
+  for (const p of visiblePostById.values()) {
     if (p.posterId !== memberId) continue;
     if (p.archivedAt !== null) continue;
     const freshness = freshnessFor(p, now);

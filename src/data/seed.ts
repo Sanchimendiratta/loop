@@ -236,6 +236,14 @@ interface FixturePostInput {
   companyId: string | null;
   confidentialDescriptor: string | null;
   raw: string;
+  // Required, like every other judgement field below (`companyId`,
+  // `confidentialDescriptor`, `posterRelationship`, `hiringContactName`) —
+  // never taken from the parser. §9 requires a human to confirm a parsed
+  // title before a post publishes; a seeded post represents one that already
+  // passed that step, so its title is a human input here too, not a parser
+  // guess threaded straight through. See MSG_2's fixture below for why this
+  // was made required rather than merely overridden.
+  title: string;
   posterRelationship: JobPost['posterRelationship'];
   hiringContactName: string | null;
   functionLabel: string | null;
@@ -245,7 +253,7 @@ interface FixturePostInput {
 
 function buildFixturePost(input: FixturePostInput): JobPost {
   const parsed = parsePost(input.raw);
-  const title = parsed.title.value ?? 'Opportunity';
+  const title = input.title;
   const locations = parsed.locations.value ?? [];
   const exp = parsed.experience.value;
   const applyMethod = parsed.applyMethod.value ?? 'link';
@@ -576,6 +584,7 @@ export function buildSeed(now: number): AppState {
     companyId: null,
     confidentialDescriptor: 'impact-tech startup, ₹300Cr revenue',
     raw: MSG_1_CONFIDENTIAL_STARTUP,
+    title: 'AD/Director - People & Culture',
     posterRelationship: 'internal_can_refer',
     hiringContactName: null,
     functionLabel: 'People & Culture',
@@ -589,6 +598,12 @@ export function buildSeed(now: number): AppState {
     companyId: null,
     confidentialDescriptor: 'Mumbai-based MNC insurer',
     raw: MSG_2_PHONE_ROUTE,
+    // The parser's literal title ("for a Strategy role with a Mumbai-based
+    // MNC insurer.") is a sentence fragment lifted verbatim from the WhatsApp
+    // forward — exactly the raw parser guess §9's human-confirmation step
+    // exists to catch before a post publishes. This is what a poster would
+    // actually have typed.
+    title: 'Strategy Manager',
     posterRelationship: 'knows_contact',
     hiringContactName: 'Nikita',
     functionLabel: 'Strategy',
@@ -602,6 +617,7 @@ export function buildSeed(now: number): AppState {
     companyId: null,
     confidentialDescriptor: 'healthcare services / wellness',
     raw: MSG_3_SEARCH_FIRM,
+    title: 'CHIEF BUSINESS OFFICER',
     posterRelationship: 'forwarded',
     hiringContactName: null,
     functionLabel: 'Executive Search',
@@ -615,6 +631,7 @@ export function buildSeed(now: number): AppState {
     companyId: 'c_foodhak',
     confidentialDescriptor: null,
     raw: MSG_4_NAMED_COMPANY,
+    title: 'Brand Marketing Manager',
     posterRelationship: 'hiring_manager',
     hiringContactName: 'Meera Iyer',
     functionLabel: 'Marketing',
@@ -628,6 +645,7 @@ export function buildSeed(now: number): AppState {
     companyId: 'c_anveshan',
     confidentialDescriptor: null,
     raw: MSG_5_CAREERS_EMAIL,
+    title: 'Head of Operations',
     posterRelationship: 'forwarded',
     hiringContactName: null,
     functionLabel: 'Operations',
@@ -647,6 +665,7 @@ export function buildSeed(now: number): AppState {
     companyId: 'c_nykaa',
     confidentialDescriptor: null,
     raw: 'Nykaa is hiring a Growth Marketing Associate!\n\nLocation: Mumbai\nExperience: 2-4 years\n\nApply here: https://nykaa.com/careers/growth-marketing-associate',
+    title: 'Growth Marketing Associate',
     posterRelationship: 'internal_can_refer',
     hiringContactName: null,
     functionLabel: 'Marketing',

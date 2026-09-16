@@ -474,3 +474,83 @@ describe('member-facing reports (§7.1 Must / §8)', () => {
     expect(store.listReports().some((r) => r.targetId === post.id)).toBe(true);
   });
 });
+
+describe('post visibility is one rule — postsVisibleTo (Fix 1)', () => {
+  test('a post with an open report drops out of posterStatsFor’s counts and the poster’s own tracker', () => {
+    const post = store.getState().posts.find((p) => p.id === 'p_anveshan')!;
+    const reporter = store.getState().members.find(
+      (m) => m.status === 'verified' && m.id !== post.posterId,
+    )!;
+    store.setCurrentMember(reporter.id);
+    store.reportTarget('post', post.id, 'This looks off.');
+
+    store.setCurrentMember(post.posterId);
+    expect(store.posterStatsFor(post.id)).toEqual({
+      views: 0,
+      applied: 0,
+      heardBack: 0,
+      interviewing: 0,
+      outcomesUnknown: true,
+    });
+    expect(store.trackerFor(post.posterId, NOW).some((r) => r.id === post.id)).toBe(false);
+  });
+
+  test('confirmPost on a reported post fails closed rather than succeeding', () => {
+    const post = store.getState().posts.find((p) => p.id === 'p_anveshan')!;
+    const reporter = store.getState().members.find(
+      (m) => m.status === 'verified' && m.id !== post.posterId,
+    )!;
+    store.setCurrentMember(reporter.id);
+    store.reportTarget('post', post.id, 'This looks off.');
+
+    store.setCurrentMember(post.posterId);
+    expect(() => store.confirmPost(post.id, 'open')).toThrow(RuleViolation);
+  });
+});
+
+describe('setProfile validates the batch year at the store boundary (Fix 3)', () => {
+  test('an empty/zero batch is refused and leaves the member’s own batch unchanged', () => {
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    store.setCurrentMember(ananya.id);
+    expect(() =>
+      store.setProfile({
+        name: ananya.name,
+        // `Number('')` — exactly what a cleared `<input type="number">` yields.
+        batch: Number(''),
+        programme: ananya.programme,
+        companyId: ananya.companyId,
+        title: null,
+        function: null,
+        location: null,
+        linkedinUrl: null,
+        openToReferring: ananya.openToReferring,
+      }),
+    ).toThrow(RuleViolation);
+    expect(store.getState().members.find((m) => m.id === ananya.id)!.batch).toBe(ananya.batch);
+  });
+});
+
+describe('a suspended member’s posts come down too (Fix 5)', () => {
+  test('hidden from a non-admin, still visible to an admin', () => {
+    const post = store.getState().posts.find((p) => p.archivedAt === null)!;
+    const poster = store.getState().members.find((m) => m.id === post.posterId)!;
+    const reporter = store.getState().members.find(
+      (m) => m.status === 'verified' && m.id !== poster.id && !m.isAdmin,
+    )!;
+    const admin = store.getState().members.find((m) => m.isAdmin && m.id !== poster.id)!;
+
+    store.setCurrentMember(reporter.id);
+    const report = store.reportTarget('member', poster.id, 'Spamming the board.');
+
+    store.setCurrentMember(admin.id);
+    store.upholdReport(report.id);
+    expect(store.getState().members.find((m) => m.id === poster.id)!.status).toBe('suspended');
+
+    store.setCurrentMember(reporter.id);
+    expect(store.getPost(post.id)).toBeNull();
+    expect(store.listPosts(NOW).some((p) => p.id === post.id)).toBe(false);
+
+    store.setCurrentMember(admin.id);
+    expect(store.getPost(post.id)?.id).toBe(post.id);
+  });
+});

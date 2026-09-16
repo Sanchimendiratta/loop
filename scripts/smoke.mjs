@@ -35,7 +35,8 @@ function fail(label, detail) {
 }
 
 // ---------------------------------------------------------------------------
-// Guard: the `src/ui/` boundary (checked statically, no server needed).
+// Assertion 1 of 3: the `src/ui/` boundary guard (checked statically, no
+// server needed).
 //
 // `src/data/store.ts` documents `getState()` as "TEST-ONLY" and explains why:
 // it is the one function in that file that answers without asking who is
@@ -277,7 +278,7 @@ console.log(
 );
 
 // ---------------------------------------------------------------------------
-// Assertion 1 of 2: D2, "an unverified account can see nothing." Board asked
+// Assertion 2 of 3: D2, "an unverified account can see nothing." Board asked
 // to render for an unverified/pending viewer must carry none of the verified
 // membership by name.
 // ---------------------------------------------------------------------------
@@ -307,7 +308,7 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Assertion 2 of 2: field scoping. A member read must never expose another
+// Assertion 3 of 3: field scoping. A member read must never expose another
 // member's `privacy`, `googleSub` or `caps`, and must never expose their real
 // email address either. This was a real defect caught mid-build (Task 24) —
 // this is its regression test, run every time `npm run verify` runs.
