@@ -1,8 +1,77 @@
 import { useMemo, useState } from 'react';
-import { getCurrentMember, listCompanies, listMembers, referralAvailabilityFor } from '../data/store.ts';
-import { Avatar, Button, Card, Chip, EmptyState, Field, Input, Select } from './primitives.tsx';
+import { getCurrentMember, listCompanies, listMembers, referralAvailabilityFor, reportTarget, RuleViolation } from '../data/store.ts';
+import { Avatar, Button, Card, Chip, EmptyState, Field, Input, Modal, Select, Textarea } from './primitives.tsx';
 import { availabilityMessage } from './RequestComposer.tsx';
 import type { ReferralAsk } from './RequestComposer.tsx';
+
+/**
+ * §7.1 Must / §8: reporting a member, reachable from their directory row. A
+ * member cannot report themselves — the caller below only ever renders this
+ * for `!isSelf`, and `reportTarget` in the store refuses a self-report too.
+ */
+function ReportMemberModal({
+  memberId,
+  memberName,
+  onClose,
+}: {
+  memberId: string;
+  memberName: string;
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  function submit() {
+    try {
+      reportTarget('member', memberId, reason);
+      setError(null);
+      setDone(true);
+    } catch (e) {
+      if (e instanceof RuleViolation) {
+        setError(e.message);
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  if (done) {
+    return (
+      <Modal open onClose={onClose} title="Reported">
+        <p className="text-sm text-stone-600">
+          Thanks — an admin will review this report. Nothing changes for {memberName} unless it's upheld.
+        </p>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Report ${memberName}`} subtitle="Tell us what's wrong.">
+      <div className="flex flex-col gap-3">
+        <Field label="Reason" required>
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.currentTarget.value)}
+            placeholder="What happened?"
+          />
+        </Field>
+        <p className="text-xs text-stone-500">
+          A report does not change anything on its own — an admin reviews it before any action is taken.
+        </p>
+        {error ? <p className="text-xs font-medium text-[var(--color-owed)]">{error}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="danger" size="sm" onClick={submit}>
+            Submit report
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 
 export interface DirectoryProps {
   onOpenCompany: (companyId: string) => void;
@@ -32,6 +101,7 @@ export function Directory({ onOpenCompany, onRequestReferral, now = Date.now() }
   const [location, setLocation] = useState<string>(ALL);
   const [batch, setBatch] = useState<string>(ALL);
   const [openOnly, setOpenOnly] = useState(false);
+  const [reporting, setReporting] = useState<{ id: string; name: string } | null>(null);
 
   const companyById = useMemo(() => new Map(companies.map((c) => [c.id, c.name])), [companies]);
 
@@ -187,6 +257,12 @@ export function Directory({ onOpenCompany, onRequestReferral, now = Date.now() }
                   {m.openToReferring ? 'Open to referring' : 'Not open to referring'}
                 </Chip>
 
+                {!isSelf ? (
+                  <Button variant="ghost" size="sm" onClick={() => setReporting({ id: m.id, name: m.name })}>
+                    Report
+                  </Button>
+                ) : null}
+
                 {m.openToReferring && m.companyId && !isSelf && availability ? (
                   availability.accepting ? (
                     <Button
@@ -215,6 +291,14 @@ export function Directory({ onOpenCompany, onRequestReferral, now = Date.now() }
           })}
         </Card>
       )}
+
+      {reporting ? (
+        <ReportMemberModal
+          memberId={reporting.id}
+          memberName={reporting.name}
+          onClose={() => setReporting(null)}
+        />
+      ) : null}
     </div>
   );
 }

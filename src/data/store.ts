@@ -33,6 +33,7 @@ import type {
   Report,
   RequestEvent,
   RequestState,
+  ResumeVersion,
   VerificationCase,
 } from './schema.ts';
 import {
@@ -946,6 +947,81 @@ export function setPrivacy(privacy: PrivacySettings): Member {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Writes — profile (§7.4)
+// ---------------------------------------------------------------------------
+
+export interface ProfileEdit {
+  name: string;
+  batch: number;
+  programme: string;
+  companyId: string | null;
+  title: string | null;
+  function: string | null;
+  location: string | null;
+  linkedinUrl: string | null;
+  openToReferring: boolean;
+}
+
+/**
+ * The viewer's own profile fields — never anyone else's. Reached the same way
+ * `setCaps`/`setPrivacy` are: `getCurrentMember()`, never `getMember()`.
+ *
+ * The LinkedIn URL is stored as exactly the string it is given. §7.4 is
+ * absolute that nothing in this product fetches, previews or validates it
+ * against the network — enforced here by omission: there is no fetch to
+ * remove.
+ */
+export function setProfile(fields: ProfileEdit): Member {
+  const viewer = requireViewer();
+  if (!fields.name.trim()) {
+    throw new RuleViolation('A profile needs a name.', 'missing_name');
+  }
+  if (!fields.programme.trim()) {
+    throw new RuleViolation('A profile needs a programme.', 'missing_programme');
+  }
+  return replaceMember({
+    ...viewer,
+    name: fields.name.trim(),
+    batch: fields.batch,
+    programme: fields.programme.trim(),
+    companyId: fields.companyId,
+    title: fields.title?.trim() || null,
+    function: fields.function?.trim() || null,
+    location: fields.location?.trim() || null,
+    linkedinUrl: fields.linkedinUrl?.trim() || null,
+    openToReferring: fields.openToReferring,
+  });
+}
+
+/**
+ * The viewer's current resume — filename only. No admin exception and no
+ * lookup by id: a resume is exactly as private as the profile it belongs to,
+ * and the only resume this function will ever hand back is the caller's own.
+ */
+export function myResume(): ResumeVersion | null {
+  const viewer = viewerOrNull();
+  if (!viewer || !viewer.resumeVersionId) return null;
+  return getState().resumes.find((r) => r.id === viewer.resumeVersionId) ?? null;
+}
+
+/**
+ * Records a new resume version by filename only. No file is ever read here —
+ * there is nothing in this function that could read one, which is the point:
+ * the browser hands over a `File` object on selection, and all that is kept
+ * of it is the `.name` the caller already extracted before calling this.
+ */
+export function uploadResume(filename: string): ResumeVersion {
+  const viewer = requireViewer();
+  const name = filename.trim();
+  if (!name) throw new RuleViolation('Choose a file to upload.', 'missing_filename');
+  const s = getState();
+  const resume: ResumeVersion = { id: nextId('res'), memberId: viewer.id, filename: name, uploadedAt: Date.now() };
+  s.resumes = [...s.resumes, resume];
+  replaceMember({ ...viewer, resumeVersionId: resume.id });
+  return resume;
+}
+
 /**
  * The current member's own verification case — evidence and decision.
  *
@@ -1049,6 +1125,15 @@ export function reportTarget(type: 'post' | 'member', id: string, reason: string
   const viewer = requireViewer();
   if (!reason.trim()) throw new RuleViolation('Say what is wrong with it.', 'missing_reason');
   const s = getState();
+  // §8 is a member-facing safety valve against SOMEONE ELSE's post or
+  // profile — not a way to flag your own. Enforced here, not just by hiding
+  // the button, for the same reason every other rule lives in this file.
+  if (type === 'member' && id === viewer.id) {
+    throw new RuleViolation('You cannot report yourself.', 'self_report');
+  }
+  if (type === 'post' && s.posts.find((p) => p.id === id)?.posterId === viewer.id) {
+    throw new RuleViolation('You cannot report your own post.', 'self_report');
+  }
   const now = Date.now();
   const report: Report = {
     id: nextId('rep'),

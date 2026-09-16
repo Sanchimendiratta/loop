@@ -11,6 +11,7 @@ import {
   listCompanies,
   posterStatsFor,
   referralAvailabilityFor,
+  reportTarget,
   requestContactRemoval,
   RuleViolation,
   sharersFor,
@@ -19,7 +20,7 @@ import type { ConfirmState } from '../data/schema.ts';
 import { disclosureSentence, destinationLabel, relationshipBadge } from '../core/disclosure.ts';
 import { freshnessFor } from '../core/freshness.ts';
 import { sharerSummary } from '../core/dedupe.ts';
-import { Avatar, Button, Chip, Modal } from './primitives.tsx';
+import { Avatar, Button, Chip, Field, Modal, Textarea } from './primitives.tsx';
 import { expLabel } from './PostCard.tsx';
 import type { ReferralAsk } from './RequestComposer.tsx';
 
@@ -49,14 +50,26 @@ const CONFIRM_OPTIONS: { id: ConfirmState; label: string }[] = [
 export function PostDetail({ postId, now, onClose, onRequestReferral }: PostDetailProps) {
   const [showRaw, setShowRaw] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('');
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [justReported, setJustReported] = useState(false);
 
   const post = getPost(postId);
   const viewer = getCurrentMember();
 
   if (!post) {
+    // §8: a single report hides a post pending review — for everyone but an
+    // admin, the reporter included. Without this branch the reporter's own
+    // "you reported it" confirmation would be indistinguishable from a post
+    // that simply vanished.
     return (
-      <Modal open onClose={onClose} title="Post unavailable">
-        <p className="text-sm text-stone-600">This post is no longer available.</p>
+      <Modal open onClose={onClose} title={justReported ? 'Reported' : 'Post unavailable'}>
+        <p className="text-sm text-stone-600">
+          {justReported
+            ? "Thanks — this post is now hidden from the board while an admin reviews your report."
+            : 'This post is no longer available.'}
+        </p>
       </Modal>
     );
   }
@@ -104,6 +117,23 @@ export function PostDetail({ postId, now, onClose, onRequestReferral }: PostDeta
     }
   }
 
+  function submitReport() {
+    if (!post) return;
+    try {
+      reportTarget('post', post.id, reportReason);
+      setReportError(null);
+      setReportOpen(false);
+      setReportReason('');
+      setJustReported(true);
+    } catch (e) {
+      if (e instanceof RuleViolation) {
+        setReportError(e.message);
+      } else {
+        throw e;
+      }
+    }
+  }
+
   // §7.2 / DL2: hidden entirely when the company is withheld — there is no
   // company to find alumni at, and guessing would defeat the poster's
   // deliberate choice. No cap of any kind on the seeker side here (DL1).
@@ -132,6 +162,14 @@ export function PostDetail({ postId, now, onClose, onRequestReferral }: PostDeta
           <Avatar name={posterName} size={24} />
           <span className="text-sm text-stone-700">{posterName}</span>
           <Chip tone="neutral">{badge.label}</Chip>
+          {/* §7.1 Must / §8: a report on every card. Hidden for the poster —
+              a member cannot report their own post, and `reportTarget` in the
+              store refuses it too, so this is not the only guard. */}
+          {!isPoster ? (
+            <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setReportOpen(true)}>
+              Report
+            </Button>
+          ) : null}
         </div>
 
         <p className="rounded-lg bg-stone-50 px-3 py-2 text-sm font-semibold leading-snug text-stone-900 ring-1 ring-stone-200">
@@ -302,6 +340,39 @@ export function PostDetail({ postId, now, onClose, onRequestReferral }: PostDeta
           </div>
         ) : null}
       </div>
+
+      {reportOpen ? (
+        <Modal
+          open
+          onClose={() => setReportOpen(false)}
+          title="Report this post"
+          subtitle="Tell us what's wrong with it."
+        >
+          <div className="flex flex-col gap-3">
+            <Field label="Reason" required>
+              <Textarea
+                value={reportReason}
+                onChange={(e) => setReportReason(e.currentTarget.value)}
+                placeholder="e.g. This role looks like a scam, or the details are wrong."
+              />
+            </Field>
+            <p className="text-xs text-stone-500">
+              Reporting hides this post from the board immediately, pending an admin's review.
+            </p>
+            {reportError ? (
+              <p className="text-xs font-medium text-[var(--color-owed)]">{reportError}</p>
+            ) : null}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setReportOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="danger" size="sm" onClick={submitReport}>
+                Submit report
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
     </Modal>
   );
 }

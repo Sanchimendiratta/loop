@@ -384,3 +384,93 @@ describe('publishing — what is not a merge target', () => {
     expect(store.getState().shares.some((s) => s.jobPostId === existing.id && s.sharerId === partho.id)).toBe(false);
   });
 });
+
+describe('the profile (Task 24, §7.4)', () => {
+  test('setProfile edits only the viewer’s own record', () => {
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
+    store.setCurrentMember(ananya.id);
+
+    const updated = store.setProfile({
+      name: ananya.name,
+      batch: ananya.batch,
+      programme: ananya.programme,
+      companyId: ananya.companyId,
+      title: 'New Title',
+      function: 'Strategy',
+      location: 'Remote',
+      linkedinUrl: 'https://linkedin.com/in/example',
+      openToReferring: !ananya.openToReferring,
+    });
+
+    expect(updated.title).toBe('New Title');
+    expect(store.getState().members.find((m) => m.id === karan.id)!.title).toBe(karan.title);
+  });
+
+  test('setProfile refuses an empty name', () => {
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    store.setCurrentMember(ananya.id);
+    expect(() =>
+      store.setProfile({
+        name: '   ',
+        batch: ananya.batch,
+        programme: ananya.programme,
+        companyId: ananya.companyId,
+        title: null,
+        function: null,
+        location: null,
+        linkedinUrl: null,
+        openToReferring: false,
+      }),
+    ).toThrow(RuleViolation);
+  });
+
+  test('uploadResume stores a filename only and points the member at it; myResume is viewer-scoped', () => {
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
+
+    store.setCurrentMember(karan.id);
+    expect(store.myResume()).toBeNull();
+
+    const resume = store.uploadResume('Karan_Shah_Resume.pdf');
+    expect(resume.filename).toBe('Karan_Shah_Resume.pdf');
+    expect(store.myResume()?.id).toBe(resume.id);
+    expect(store.getState().members.find((m) => m.id === karan.id)!.resumeVersionId).toBe(resume.id);
+
+    // Someone else's resume pointer is untouched, and `myResume` never
+    // answers for anyone but the current viewer.
+    store.setCurrentMember(ananya.id);
+    expect(store.myResume()?.filename).not.toBe('Karan_Shah_Resume.pdf');
+  });
+});
+
+describe('member-facing reports (§7.1 Must / §8)', () => {
+  test('a member cannot report their own post', () => {
+    const post = store.getState().posts[0];
+    store.setCurrentMember(post.posterId);
+    expect(() => store.reportTarget('post', post.id, 'looks wrong')).toThrow(RuleViolation);
+  });
+
+  test('a member cannot report themselves', () => {
+    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
+    store.setCurrentMember(ananya.id);
+    expect(() => store.reportTarget('member', ananya.id, 'testing')).toThrow(RuleViolation);
+  });
+
+  test('reporting someone else’s post hides it from the board pending review, but not from an admin', () => {
+    const post = store.getState().posts.find((p) => p.archivedAt === null)!;
+    const reporter = store.getState().members.find(
+      (m) => m.status === 'verified' && m.id !== post.posterId,
+    )!;
+    store.setCurrentMember(reporter.id);
+    store.reportTarget('post', post.id, 'This looks like a scam.');
+
+    expect(store.getPost(post.id)).toBeNull();
+    expect(store.listPosts(NOW).some((p) => p.id === post.id)).toBe(false);
+
+    const admin = store.getState().members.find((m) => m.isAdmin)!;
+    store.setCurrentMember(admin.id);
+    expect(store.getPost(post.id)?.id).toBe(post.id);
+    expect(store.listReports().some((r) => r.targetId === post.id)).toBe(true);
+  });
+});

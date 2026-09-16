@@ -6,6 +6,7 @@ import { Board } from './Board.tsx';
 import { PostDetail } from './PostDetail.tsx';
 import { Directory } from './Directory.tsx';
 import { CompanyPage } from './CompanyPage.tsx';
+import { Profile } from './Profile.tsx';
 import { RequestComposer } from './RequestComposer.tsx';
 import type { ReferralAsk } from './RequestComposer.tsx';
 import { RequestDetail } from './RequestDetail.tsx';
@@ -16,7 +17,7 @@ import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
 import { useNow, useStoreVersion } from './useStore.ts';
 
-type View = 'board' | 'tracker' | 'directory' | 'requests' | 'admin';
+type View = 'board' | 'tracker' | 'directory' | 'requests' | 'profile' | 'admin';
 
 export function App() {
   useStoreVersion();
@@ -66,6 +67,7 @@ export function App() {
         { id: 'tracker', label: 'Tracker', badge: owedCount },
         { id: 'directory', label: 'Directory' },
         { id: 'requests', label: 'Requests' },
+        { id: 'profile', label: 'Profile' },
         ...(member?.isAdmin ? [{ id: 'admin', label: 'Admin', badge: pendingCases }] : []),
       ]
     : [];
@@ -123,6 +125,7 @@ export function App() {
               )
             ) : null}
             {view === 'requests' ? <Requests now={now} /> : null}
+            {view === 'profile' ? <Profile /> : null}
             {view === 'admin' ? <Admin now={now} /> : null}
           </Shell>
         </VerificationGate>
