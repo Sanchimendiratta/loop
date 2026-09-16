@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { getCurrentMember, listCases, listPersonas, setCurrentMember, trackerFor } from '../data/store.ts';
 import { Avatar, EmptyState, Select } from './primitives.tsx';
 import { Board } from './Board.tsx';
+import { PostDetail } from './PostDetail.tsx';
+import type { ReferralBridgeRequest } from './PostDetail.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
@@ -22,9 +24,15 @@ export function App() {
   useStoreVersion();
   const now = useNow();
   const [view, setView] = useState<View>('board');
-  // Task 19 (post detail) reads this; the board just needs somewhere to hand
-  // the clicked post id.
-  const [, setOpenPostId] = useState<string | null>(null);
+  const [openPostId, setOpenPostId] = useState<string | null>(null);
+
+  // Task 21 owns the referral request composer and its lifecycle. Until it
+  // exists, the bridge's callback has nowhere real to hand off to — logging
+  // is the smallest honest stand-in, and deliberately not a second, half-built
+  // composer living in this task's scope.
+  function handleRequestReferral(req: ReferralBridgeRequest): void {
+    console.info('[Task 21 TODO] open referral request composer, pre-filled with:', req);
+  }
 
   const member = getCurrentMember();
   const isVerified = member?.status === 'verified';
@@ -96,6 +104,15 @@ export function App() {
           </Shell>
         </VerificationGate>
       </div>
+
+      {openPostId ? (
+        <PostDetail
+          postId={openPostId}
+          now={now}
+          onClose={() => setOpenPostId(null)}
+          onRequestReferral={handleRequestReferral}
+        />
+      ) : null}
     </div>
   );
 }

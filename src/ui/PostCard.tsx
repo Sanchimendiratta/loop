@@ -11,7 +11,8 @@ export interface PostCardProps {
   onOpen: (postId: string) => void;
 }
 
-function expLabel(min: number | null, max: number | null): string | null {
+/** Shared with `PostDetail`, which shows the same experience band. */
+export function expLabel(min: number | null, max: number | null): string | null {
   if (min === null && max === null) return null;
   if (min !== null && max !== null) return min === max ? `${min} yrs` : `${min}–${max} yrs`;
   if (min !== null) return `${min}+ yrs`;

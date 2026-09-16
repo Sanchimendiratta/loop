@@ -401,6 +401,27 @@ export function alumniAt(companyId: string): PublicMember[] {
     .map((m) => toPublicMember(viewer, m));
 }
 
+export interface ReferralAvailability {
+  accepting: boolean;
+  reason: 'not_open' | 'paused' | 'at_capacity' | 'monthly_cap' | null;
+}
+
+/**
+ * Whether a prospective referrer can currently take another ask (DL1/§7.1),
+ * without exposing `caps` itself — that field is private intake settings, not
+ * public data (see `toPublicMember`). The bridge on a post's detail view
+ * needs exactly this one boolean to tell a paused or at-capacity referrer's
+ * OWN state apart from a seeker-side limit — there is no seeker-side limit.
+ */
+export function referralAvailabilityFor(memberId: string, now: number = Date.now()): ReferralAvailability {
+  const viewer = viewerOrNull();
+  if (!viewer) return { accepting: false, reason: null };
+  const target = getState().members.find((m) => m.id === memberId);
+  if (!target || !canSeeMember(viewer, target)) return { accepting: false, reason: null };
+  const { accepting, reason } = intakeCheck(target, getState().requests, now);
+  return { accepting, reason: reason as ReferralAvailability['reason'] };
+}
+
 export function listRequests(): ReferralRequest[] {
   const viewer = viewerOrNull();
   if (!viewer) return [];
