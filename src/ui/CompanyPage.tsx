@@ -1,21 +1,7 @@
 import { alumniAt, getCurrentMember, listCompanies, referralAvailabilityFor } from '../data/store.ts';
-import type { ReferralAvailability } from '../data/store.ts';
+import { availabilityMessage } from './RequestComposer.tsx';
+import type { ReferralAsk } from './RequestComposer.tsx';
 import { Avatar, Button, Card, Chip, EmptyState } from './primitives.tsx';
-
-/**
- * A cold ask at a company: no job post behind it, unlike `ReferralBridgeRequest`
- * (`PostDetail.tsx`), whose `jobPostId` is always real because it only ever
- * fires from a post. Here there may be no post in the picture at all, so
- * `jobPostId` is nullable and `roleTitle` may arrive blank — Task 21's composer
- * is the one place that has to cope with both shapes.
- */
-export interface ReferralAsk {
-  referrerId: string;
-  companyId: string;
-  roleTitle: string;
-  jobPostId: string | null;
-  roleUrl: string | null;
-}
 
 export interface CompanyPageProps {
   companyId: string;
@@ -23,25 +9,6 @@ export interface CompanyPageProps {
   /** Optional: lets a caller (App's directory flow) offer a way back. */
   onBack?: () => void;
   now?: number;
-}
-
-/**
- * Reason -> a referrer's own words, per DL1: never a seeker-side quota, always
- * the REFERRER's chosen intake state. Short enough to sit on a disabled
- * button, honest enough that a seeker knows exactly why it is disabled.
- * Shared with `Directory.tsx` so the two surfaces cannot describe the same
- * `reason` two different ways.
- */
-const AVAILABILITY_MESSAGE: Record<NonNullable<ReferralAvailability['reason']>, string> = {
-  not_open: 'Not open to referring',
-  paused: 'Not taking asks right now',
-  at_capacity: 'At capacity right now',
-  monthly_cap: 'At capacity this month',
-};
-
-export function availabilityMessage(a: ReferralAvailability): string {
-  if (a.accepting) return '';
-  return a.reason ? AVAILABILITY_MESSAGE[a.reason] : 'Not taking referral requests right now';
 }
 
 /**

@@ -21,26 +21,18 @@ import { freshnessFor } from '../core/freshness.ts';
 import { sharerSummary } from '../core/dedupe.ts';
 import { Avatar, Button, Chip, Modal } from './primitives.tsx';
 import { expLabel } from './PostCard.tsx';
-
-/**
- * What the bridge button hands off. Task 21 owns the request composer itself
- * — this is the smaller of the two options the brief allows: a callback the
- * board can wire into a modal, rather than a second, half-built composer
- * living here too.
- */
-export interface ReferralBridgeRequest {
-  referrerId: string;
-  companyId: string;
-  roleTitle: string;
-  jobPostId: string;
-  roleUrl: string | null;
-}
+import type { ReferralAsk } from './RequestComposer.tsx';
 
 export interface PostDetailProps {
   postId: string;
   now: number;
   onClose: () => void;
-  onRequestReferral: (req: ReferralBridgeRequest) => void;
+  /**
+   * The bridge into Task 21's composer. `ReferralAsk` is the one shape every
+   * "ask for a referral" entry point raises — here `jobPostId` is always a
+   * real string, because this bridge only ever fires from a specific post.
+   */
+  onRequestReferral: (req: ReferralAsk) => void;
 }
 
 const CONFIRM_OPTIONS: { id: ConfirmState; label: string }[] = [

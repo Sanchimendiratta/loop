@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { getCurrentMember, listCompanies, listMembers, referralAvailabilityFor } from '../data/store.ts';
 import { Avatar, Button, Card, Chip, EmptyState, Field, Input, Select } from './primitives.tsx';
-import { availabilityMessage } from './CompanyPage.tsx';
-import type { ReferralAsk } from './CompanyPage.tsx';
+import { availabilityMessage } from './RequestComposer.tsx';
+import type { ReferralAsk } from './RequestComposer.tsx';
 
 export interface DirectoryProps {
   onOpenCompany: (companyId: string) => void;

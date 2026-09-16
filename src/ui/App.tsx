@@ -3,10 +3,11 @@ import { getCurrentMember, listCases, listPersonas, setCurrentMember, trackerFor
 import { Avatar, EmptyState, Select } from './primitives.tsx';
 import { Board } from './Board.tsx';
 import { PostDetail } from './PostDetail.tsx';
-import type { ReferralBridgeRequest } from './PostDetail.tsx';
 import { Directory } from './Directory.tsx';
 import { CompanyPage } from './CompanyPage.tsx';
-import type { ReferralAsk } from './CompanyPage.tsx';
+import { RequestComposer } from './RequestComposer.tsx';
+import type { ReferralAsk } from './RequestComposer.tsx';
+import { Requests } from './Requests.tsx';
 import { Shell } from './Shell.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
@@ -29,20 +30,16 @@ export function App() {
   const [view, setView] = useState<View>('board');
   const [openPostId, setOpenPostId] = useState<string | null>(null);
   const [openCompanyId, setOpenCompanyId] = useState<string | null>(null);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [composerAsk, setComposerAsk] = useState<ReferralAsk | null>(null);
 
-  // Task 21 owns the referral request composer and its lifecycle. Until it
-  // exists, the bridge's callback has nowhere real to hand off to — logging
-  // is the smallest honest stand-in, and deliberately not a second, half-built
-  // composer living in this task's scope.
-  function handleRequestReferral(req: ReferralBridgeRequest): void {
-    console.info('[Task 21 TODO] open referral request composer, pre-filled with:', req);
-  }
-
-  // The directory and company page raise a "cold" ask — no job post behind
-  // it, so `jobPostId` may be null and `roleTitle` blank. Same stand-in as
-  // above, kept separate because the two callback shapes differ.
-  function handleDirectReferralAsk(req: ReferralAsk): void {
-    console.info('[Task 21 TODO] open referral request composer, pre-filled with:', req);
+  // The one hand-off every "ask for a referral" entry point shares —
+  // `Directory.tsx`, `CompanyPage.tsx` and `PostDetail.tsx`'s bridge all raise
+  // the same `ReferralAsk` shape now, so there is exactly one handler here
+  // rather than one per shape.
+  function handleRequestReferral(req: ReferralAsk): void {
+    setComposerAsk(req);
+    setComposerOpen(true);
   }
 
   // Leaving the directory tab drops any company drill-down, so coming back
@@ -122,13 +119,13 @@ export function App() {
                   companyId={openCompanyId}
                   now={now}
                   onBack={() => setOpenCompanyId(null)}
-                  onRequestReferral={handleDirectReferralAsk}
+                  onRequestReferral={handleRequestReferral}
                 />
               ) : (
-                <Directory now={now} onOpenCompany={setOpenCompanyId} onRequestReferral={handleDirectReferralAsk} />
+                <Directory now={now} onOpenCompany={setOpenCompanyId} onRequestReferral={handleRequestReferral} />
               )
             ) : null}
-            {view === 'requests' ? <Placeholder label="Requests" /> : null}
+            {view === 'requests' ? <Requests now={now} /> : null}
             {view === 'admin' ? <Placeholder label="Admin" /> : null}
           </Shell>
         </VerificationGate>
@@ -142,6 +139,13 @@ export function App() {
           onRequestReferral={handleRequestReferral}
         />
       ) : null}
+
+      <RequestComposer
+        open={composerOpen}
+        prefill={composerAsk}
+        onClose={() => setComposerOpen(false)}
+        onSent={() => setComposerOpen(false)}
+      />
     </div>
   );
 }
