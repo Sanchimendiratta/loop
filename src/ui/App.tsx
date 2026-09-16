@@ -115,7 +115,7 @@ export function App() {
 
       <div className="min-h-0 flex-1">
         <VerificationGate>
-          <Shell nav={nav} active={view} onNavigate={handleNavigate}>
+          <Shell nav={nav} active={view} onNavigate={handleNavigate} now={now}>
             {/* No detail screen — Task 8 rewrote the board to expand a row
                 in place instead, so there is nothing for a post id to open
                 into. */}
