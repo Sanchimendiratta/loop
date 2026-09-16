@@ -1,129 +1,471 @@
-import { useMemo, useState } from 'react';
-import { listPosts, posterName } from '../data/store.ts';
-import type { Connection, FunctionArea } from '../data/schema.ts';
+import type { ReactNode } from 'react';
+import { Fragment, useMemo, useState } from 'react';
+import {
+  RuleViolation,
+  applicationFor,
+  applyDisclosureFields,
+  applyToPost,
+  getCurrentMember,
+  listPosts,
+  posterName,
+  reportPost,
+} from '../data/store.ts';
+import { FUNCTIONS } from '../data/schema.ts';
+import type { Application, ApplicationStatus, Connection, FunctionArea, JobPost } from '../data/schema.ts';
 import { connectionBadge, connectionLine } from '../core/disclosure.ts';
 import { postAge } from '../core/freshness.ts';
-import { Button, EmptyState, Field, Select, Tabs, cx } from './primitives.tsx';
-import { PostComposer } from './PostComposer.tsx';
+import { Button, Chip, EmptyState, Tabs, cx } from './primitives.tsx';
 
 export interface BoardProps {
   now: number;
+  /**
+   * Retained for the smoke script's and `App`'s prop contract from before this
+   * rewrite. Lite has no detail screen — Apply expands the row in place — so
+   * there is nothing left for a post id to open into, and this is
+   * deliberately unused below.
+   */
   onOpenPost: (postId: string) => void;
 }
 
 const ALL = 'all';
 
-const CONNECTION_FILTERS: Connection[] = ['hiring', 'works_here', 'knows_contact', 'forwarded'];
-
+type FunctionFilter = FunctionArea | typeof ALL;
+type ConnectionFilter = Connection | typeof ALL;
 type SortMode = 'connection' | 'recent';
 
+const CONNECTION_FILTERS: Connection[] = ['hiring', 'works_here', 'knows_contact', 'forwarded'];
+
+interface ExpBand {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+}
+
+/** Coarse bands over `expMin`/`expMax`, since Lite has no experience enum to filter on. */
+const EXP_BANDS: ExpBand[] = [
+  { id: '0-3', label: '0–3 yrs', min: 0, max: 3 },
+  { id: '3-6', label: '3–6 yrs', min: 3, max: 6 },
+  { id: '6-10', label: '6–10 yrs', min: 6, max: 10 },
+  { id: '10+', label: '10+ yrs', min: 10, max: Infinity },
+];
+
+const STATUS_LABEL: Record<ApplicationStatus, string> = {
+  yet_to_respond: 'Yet to respond',
+  in_review: 'In review',
+  interview_scheduled: 'Interview scheduled',
+  awaiting_next_round: 'Awaiting next round',
+  offer: 'Offer',
+  rejected: 'Rejected',
+  no_response: 'No response',
+};
+
+const SORT_OPTIONS: { id: SortMode; label: string }[] = [
+  { id: 'connection', label: 'Connection first (default)' },
+  { id: 'recent', label: 'Most recent' },
+];
+
+/** "a, b, and c" — the exact join `applyDisclosureFields()`'s consent line needs. */
+function formatFieldList(items: string[]): string {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0];
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
 /**
- * The job board (Lite §6 sheet 3). Reduced from v1.3's card grid to the parts
- * that still typecheck against Lite's schema — a later task rewrites it as the
- * expanding table §6 specifies, with the apply flow and the report link.
- *
- * Ordering is `listPosts`'s, not this component's: connection rung then newest,
- * labelled so the ranking is legible rather than mysterious. Nothing is
- * filtered off the board — a stale post greys and sinks, it never disappears.
+ * The company column, per §10: the name, or the descriptor plus explicit
+ * wording that the poster withheld it. Never a blank or a bare dash.
  */
-export function Board({ now, onOpenPost }: BoardProps) {
+function companyCell(post: JobPost): { text: string; withheld: boolean } {
+  if (post.companyName) return { text: post.companyName, withheld: false };
+  if (post.confidentialDescriptor) {
+    return { text: `${post.confidentialDescriptor} — the poster withheld the company name.`, withheld: true };
+  }
+  return { text: 'Company not named', withheld: true };
+}
+
+function locationCell(post: JobPost): string {
+  const parts = [post.location.trim(), post.isRemote ? 'Remote' : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Not specified';
+}
+
+/**
+ * The route, only ever computed for display AFTER an application already
+ * exists — never rendered ahead of that confirm. See `RouteDisplay` below.
+ */
+function routeFor(post: JobPost): { label: string; href: string | null } {
+  switch (post.applyMethod) {
+    case 'link':
+      return { label: post.applyValue, href: post.applyValue };
+    case 'email':
+      return { label: post.applyValue, href: `mailto:${post.applyValue}` };
+    case 'phone':
+      return { label: post.applyValue, href: `tel:${post.applyValue.replace(/\s+/g, '')}` };
+    case 'through_me':
+      return { label: post.applyValue, href: null };
+  }
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cx(
+        'rounded-full px-3 py-1 text-xs font-medium ring-1 transition-colors',
+        active ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-stone-600 ring-stone-300 hover:bg-stone-50',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function FilterGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <fieldset className="flex min-w-0 flex-col gap-1.5">
+      <legend className="text-xs font-semibold tracking-wide text-stone-500 uppercase">{label}</legend>
+      <div className="flex flex-wrap gap-1.5">{children}</div>
+    </fieldset>
+  );
+}
+
+/** Already applied: the route and the current status, never the Apply button. */
+function RouteDisplay({ post, application }: { post: JobPost; application: Application }) {
+  const route = routeFor(post);
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {route.href ? (
+        <a
+          href={route.href}
+          target={post.applyMethod === 'link' ? '_blank' : undefined}
+          rel="noopener noreferrer"
+          className="font-medium text-brand-700 underline"
+        >
+          {route.label}
+        </a>
+      ) : (
+        <span className="font-medium text-stone-800">{route.label}</span>
+      )}
+      <Chip tone="neutral">{STATUS_LABEL[application.status]}</Chip>
+    </div>
+  );
+}
+
+/**
+ * The job board, rebuilt as Lite §6's sheet: a plain, sortable, filterable
+ * table — no cards, no infinite scroll. Ordering is `listPosts`'s, not this
+ * component's, and nothing is ever filtered off the board by this screen: a
+ * stale post greys and sinks, it never disappears.
+ *
+ * The one screen-specific rule this file owns is the apply route's absence
+ * from the DOM until `applyToPost` actually runs — see the `applyingId`
+ * branch below, which renders no route, link, email or phone at all until
+ * that confirm.
+ */
+export function Board({ now }: BoardProps) {
   const [sort, setSort] = useState<SortMode>('connection');
-  const [fn, setFn] = useState<string>(ALL);
-  const [connection, setConnection] = useState<Connection | typeof ALL>(ALL);
-  const [composerOpen, setComposerOpen] = useState(false);
+  const [fn, setFn] = useState<FunctionFilter>(ALL);
+  const [location, setLocation] = useState<string>(ALL);
+  const [connection, setConnection] = useState<ConnectionFilter>(ALL);
+  const [expBand, setExpBand] = useState<string>(ALL);
 
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
+
+  const [reportingId, setReportingId] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState('');
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportedIds, setReportedIds] = useState<ReadonlySet<string>>(new Set());
+
+  const viewer = getCurrentMember();
   const posts = listPosts(now, sort);
+  const disclosureFields = applyDisclosureFields();
 
-  const functions = useMemo(
-    () => Array.from(new Set(posts.map((p) => p.function))).sort() as FunctionArea[],
+  const locations = useMemo(
+    () => Array.from(new Set(posts.map((p) => p.location.trim()).filter(Boolean))).sort(),
     [posts],
   );
 
   const filtered = posts.filter((p) => {
     if (fn !== ALL && p.function !== fn) return false;
+    if (location !== ALL && p.location.trim() !== location) return false;
     if (connection !== ALL && p.connection !== connection) return false;
+    if (expBand !== ALL) {
+      const band = EXP_BANDS.find((b) => b.id === expBand);
+      if (band && !(p.expMax >= band.min && p.expMin <= band.max)) return false;
+    }
     return true;
   });
 
+  function beginApply(postId: string): void {
+    setApplyingId(postId);
+    setApplyError(null);
+  }
+  function cancelApply(): void {
+    setApplyingId(null);
+    setApplyError(null);
+  }
+  function confirmApply(postId: string): void {
+    try {
+      applyToPost(postId, now);
+      setApplyingId(null);
+      setApplyError(null);
+    } catch (err) {
+      setApplyError(err instanceof RuleViolation ? err.message : 'Something went wrong. Try again.');
+    }
+  }
+
+  function beginReport(postId: string): void {
+    setReportingId(postId);
+    setReportReason('');
+    setReportError(null);
+  }
+  function cancelReport(): void {
+    setReportingId(null);
+    setReportReason('');
+    setReportError(null);
+  }
+  function submitReport(postId: string): void {
+    try {
+      reportPost(postId, reportReason, now);
+      setReportedIds((prev) => new Set(prev).add(postId));
+      setReportingId(null);
+      setReportReason('');
+      setReportError(null);
+    } catch (err) {
+      setReportError(err instanceof RuleViolation ? err.message : 'Something went wrong. Try again.');
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 p-6">
-      <div className="flex flex-wrap items-end gap-3 rounded-xl bg-white p-4 shadow-sm ring-1 ring-stone-900/5">
-        <Field label="Function">
-          <Select value={fn} onChange={(e) => setFn(e.currentTarget.value)} className="w-52">
-            <option value={ALL}>All functions</option>
-            {functions.map((f) => (
-              <option key={f} value={f}>
-                {f}
-              </option>
-            ))}
-          </Select>
-        </Field>
+      <div className="flex flex-wrap gap-4 rounded-xl bg-white p-4 shadow-sm ring-1 ring-stone-900/5">
+        <FilterGroup label="Function">
+          <FilterChip active={fn === ALL} onClick={() => setFn(ALL)}>
+            All functions
+          </FilterChip>
+          {FUNCTIONS.map((f) => (
+            <FilterChip key={f} active={fn === f} onClick={() => setFn(f)}>
+              {f}
+            </FilterChip>
+          ))}
+        </FilterGroup>
 
-        <Field label="Connection">
-          <Select
-            value={connection}
-            onChange={(e) => setConnection(e.currentTarget.value as Connection | typeof ALL)}
-            className="w-48"
-          >
-            <option value={ALL}>Any connection</option>
-            {CONNECTION_FILTERS.map((c) => (
-              <option key={c} value={c}>
-                {connectionBadge(c)}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        <FilterGroup label="Location">
+          <FilterChip active={location === ALL} onClick={() => setLocation(ALL)}>
+            All locations
+          </FilterChip>
+          {locations.map((l) => (
+            <FilterChip key={l} active={location === l} onClick={() => setLocation(l)}>
+              {l}
+            </FilterChip>
+          ))}
+        </FilterGroup>
 
-        <div className="ml-auto flex items-center gap-3">
-          <Tabs
-            items={[
-              { id: 'connection', label: 'Connection first (default)' },
-              { id: 'recent', label: 'Most recent' },
-            ]}
-            active={sort}
-            onChange={(id) => setSort(id as SortMode)}
-          />
-          <Button variant="primary" onClick={() => setComposerOpen(true)}>
-            Post a job
-          </Button>
-        </div>
+        <FilterGroup label="Experience">
+          <FilterChip active={expBand === ALL} onClick={() => setExpBand(ALL)}>
+            Any experience
+          </FilterChip>
+          {EXP_BANDS.map((b) => (
+            <FilterChip key={b.id} active={expBand === b.id} onClick={() => setExpBand(b.id)}>
+              {b.label}
+            </FilterChip>
+          ))}
+        </FilterGroup>
+
+        <FilterGroup label="Connection">
+          <FilterChip active={connection === ALL} onClick={() => setConnection(ALL)}>
+            Any connection
+          </FilterChip>
+          {CONNECTION_FILTERS.map((c) => (
+            <FilterChip key={c} active={connection === c} onClick={() => setConnection(c)}>
+              {connectionBadge(c)}
+            </FilterChip>
+          ))}
+        </FilterGroup>
       </div>
 
-      <PostComposer
-        open={composerOpen}
-        onClose={() => setComposerOpen(false)}
-        onPublished={() => setComposerOpen(false)}
-      />
-
       {filtered.length === 0 ? (
-        <EmptyState title="No posts match those filters." />
+        <EmptyState title="No roles match those filters." />
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {filtered.map((post) => {
-            const age = postAge(post, now);
-            const who = posterName(post.posterId);
-            return (
-              <button
-                key={post.id}
-                type="button"
-                onClick={() => onOpenPost(post.id)}
-                className={cx(
-                  'flex flex-col gap-1 rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-stone-900/5',
-                  age.stale && 'opacity-60',
-                )}
-              >
-                <h3 className="text-base font-semibold text-stone-900">{post.title}</h3>
-                <p className="text-sm text-stone-600">
-                  {post.companyName ?? post.confidentialDescriptor ?? 'Company withheld'}
-                </p>
-                <p className="text-sm text-stone-600">{post.location || 'Location not specified'}</p>
-                <p className="text-sm text-stone-500">{connectionLine(post.connection, who, post.contactName)}</p>
-                <p className="text-xs text-stone-400">
-                  {connectionBadge(post.connection)} · {age.label}
-                </p>
-              </button>
-            );
-          })}
+        <div className="overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-stone-900/5">
+          <table className="stack-table w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-stone-200 text-xs font-semibold text-stone-500">
+                <th scope="col" className="px-3 py-2">
+                  Role
+                </th>
+                <th scope="col" className="px-3 py-2">
+                  Company
+                </th>
+                <th scope="col" className="px-3 py-2">
+                  Function
+                </th>
+                <th scope="col" className="px-3 py-2">
+                  Location
+                </th>
+                <th scope="col" className="px-3 py-2">
+                  Exp
+                </th>
+                <th scope="col" className="px-3 py-2">
+                  Comp
+                </th>
+                <th scope="col" className="px-3 py-2">
+                  Posted by
+                </th>
+                <th scope="col" aria-sort={sort === 'recent' ? 'descending' : 'other'} className="px-3 py-2 align-bottom">
+                  <div className="flex flex-col gap-1">
+                    <span>Posted</span>
+                    <Tabs items={SORT_OPTIONS} active={sort} onChange={(id) => setSort(id as SortMode)} />
+                  </div>
+                </th>
+                <th scope="col" className="px-3 py-2">
+                  Action
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((post) => {
+                const age = postAge(post, now);
+                const who = posterName(post.posterId);
+                const company = companyCell(post);
+                const application = applicationFor(post.id);
+                const isOwnPost = viewer?.id === post.posterId;
+                const isApplying = applyingId === post.id;
+                const isReporting = reportingId === post.id;
+                const hasReported = reportedIds.has(post.id);
+                const dim = age.stale ? 'text-stone-400' : 'text-stone-700';
+
+                return (
+                  <Fragment key={post.id}>
+                    <tr className={cx('border-b border-stone-100 align-top', age.stale && 'bg-stone-50')}>
+                      <td data-label="Role" className="px-3 py-3">
+                        <p className={cx('font-semibold', age.stale ? 'text-stone-400' : 'text-stone-900')}>
+                          {post.title}
+                        </p>
+                        {/* The honesty field: never muted, shrunk, truncated, clamped or gated
+                            behind a toggle, even on a stale row that greys everywhere else. */}
+                        <p className="mt-1 text-sm font-medium text-stone-800">
+                          {connectionLine(post.connection, who, post.contactName)}
+                        </p>
+                      </td>
+                      <td data-label="Company" className={cx('px-3 py-3', dim)}>
+                        <span className={company.withheld ? 'italic' : undefined}>{company.text}</span>
+                      </td>
+                      <td data-label="Function" className={cx('px-3 py-3', dim)}>
+                        {post.function}
+                      </td>
+                      <td data-label="Location" className={cx('px-3 py-3', dim)}>
+                        {locationCell(post)}
+                      </td>
+                      <td data-label="Exp" className={cx('px-3 py-3 tabular-nums', dim)}>
+                        {post.expMin}–{post.expMax} yrs
+                      </td>
+                      <td data-label="Comp" className={cx('px-3 py-3', dim)}>
+                        {post.compText ?? 'Not shared'}
+                      </td>
+                      <td data-label="Posted by" className={cx('px-3 py-3', dim)}>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span>{who}</span>
+                          <Chip tone="neutral">{connectionBadge(post.connection)}</Chip>
+                        </div>
+                      </td>
+                      <td data-label="Posted" className="px-3 py-3 tabular-nums">
+                        {age.stale ? <Chip tone="stale">{age.label}</Chip> : <span className={dim}>{age.label}</span>}
+                      </td>
+                      <td data-label="Action" className="px-3 py-3 align-top">
+                        <div className="flex flex-col items-start gap-2">
+                          {isOwnPost ? (
+                            <span className="text-xs text-stone-400">Your post</span>
+                          ) : application ? (
+                            <RouteDisplay post={post} application={application} />
+                          ) : isApplying ? (
+                            <Button type="button" size="sm" variant="secondary" onClick={cancelApply}>
+                              Cancel
+                            </Button>
+                          ) : (
+                            <Button type="button" size="sm" variant="primary" onClick={() => beginApply(post.id)}>
+                              Apply
+                            </Button>
+                          )}
+
+                          {isOwnPost ? (
+                            <span className="text-xs text-stone-300">Report disabled — your own post</span>
+                          ) : hasReported ? (
+                            <span className="text-xs text-stone-500">Reported</span>
+                          ) : !isReporting ? (
+                            <button
+                              type="button"
+                              className="text-xs font-medium text-stone-500 underline hover:text-stone-700"
+                              onClick={() => beginReport(post.id)}
+                            >
+                              Report
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+
+                    {isApplying && !isOwnPost ? (
+                      <tr className="border-b border-stone-100 bg-brand-50">
+                        <td colSpan={9} className="plain px-3 py-4">
+                          <div className="max-w-xl">
+                            <p className="text-sm font-semibold text-stone-900">Before you apply</p>
+                            <p className="mt-1 text-sm text-stone-700">
+                              Applying shares this with the poster: {formatFieldList(disclosureFields)}. Loop does not
+                              send your application anywhere — you contact them yourself.
+                            </p>
+                            {applyError ? (
+                              <p className="mt-2 text-sm font-medium text-[var(--color-owed)]">{applyError}</p>
+                            ) : null}
+                            <div className="mt-3 flex gap-2">
+                              <Button type="button" size="sm" variant="primary" onClick={() => confirmApply(post.id)}>
+                                Confirm application
+                              </Button>
+                              <Button type="button" size="sm" variant="ghost" onClick={cancelApply}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+
+                    {isReporting ? (
+                      <tr className="border-b border-stone-100 bg-stone-50">
+                        <td colSpan={9} className="plain px-3 py-4">
+                          <div className="max-w-xl">
+                            <label className="block text-sm font-medium text-stone-700">
+                              Why are you reporting this post?
+                              <textarea
+                                value={reportReason}
+                                onChange={(e) => setReportReason(e.currentTarget.value)}
+                                rows={2}
+                                className="mt-1 w-full rounded-lg border-0 bg-white px-3 py-2 text-sm text-stone-900 ring-1 ring-stone-300 focus:ring-2 focus:ring-brand-500 focus:outline-none"
+                              />
+                            </label>
+                            {reportError ? (
+                              <p className="mt-2 text-sm font-medium text-[var(--color-owed)]">{reportError}</p>
+                            ) : null}
+                            <div className="mt-2 flex gap-2">
+                              <Button type="button" size="sm" variant="danger" onClick={() => submitReport(post.id)}>
+                                Submit report
+                              </Button>
+                              <Button type="button" size="sm" variant="ghost" onClick={cancelReport}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
