@@ -11,7 +11,7 @@
  * produced truth", and a missing prop (a `now` nobody passed, an id that
  * doesn't resolve) tends to show up as exactly one of those three strings.
  *
- * Five things beyond "it rendered, and it isn't lying":
+ * Six things beyond "it rendered, and it isn't lying":
  *
  *   1. The `getState()` guard (and its two neighbours). Grepped statically,
  *      before Vite is even started — see `checkArchitecturalGuard` below.
@@ -36,9 +36,23 @@
  *      file must be either rendered above or named, with a reason, on the
  *      exempt list — because a module only `App.tsx` imports is not an
  *      orphan, but it can still go completely unrendered.
- *   5. The contact-route gate: `Board`'s pre-confirm apply route (spec §13's
- *      other named privacy gate, alongside D2) is absent from the DOM, not
- *      merely hidden, for any post a member has not applied to — proven
+ *   5. The contact-route gate, whole-board case: `Board`'s DEFAULT render (no
+ *      post being applied to — `applyingId`'s `useState(null)`) carries no
+ *      apply route for any post. This is real coverage of every already-
+ *      applied `RouteDisplay` and every not-yet-applying row, but because
+ *      `Board` is rendered statically here, `applyingId` never leaves its
+ *      default and the pre-confirm disclosure branch is never part of this
+ *      render at all — a route planted THERE would not be seen by this
+ *      assertion. That gap is real and is exactly what assertion 6 below
+ *      closes; the two together are the full claim, neither alone is.
+ *   6. The contact-route gate, pre-confirm case: `ApplyDisclosureRow` (the
+ *      branch `Board` mounts between Apply and Confirm, extracted to its own
+ *      component for exactly this reason) is rendered directly, against a
+ *      real un-applied seeded post, and asserted to carry neither the post's
+ *      `applyValue` nor any `tel:`/`mailto:` form of it. This is the render
+ *      assertion 5 cannot do: a reviewer proved assertion 5 stays green even
+ *      when a live route is injected into this exact branch, because
+ *      statically-rendered `Board` never reaches it. Both 5 and 6 are proven
  *      non-vacuous the same way the D2 detector is, by asserting the set of
  *      routes under test is non-empty before asserting their absence.
  */
@@ -612,36 +626,53 @@ try {
   store.setCurrentMember('m_ananya');
 }
 
+/**
+ * The apply route string(s) a leak of `post` would show up as: the bare
+ * `applyValue`, plus the exact `tel:`/`mailto:` string `Board.tsx`'s own
+ * `routeFor` would build for a phone or email post (a link or through-me
+ * post has no separate scheme to check — the bare value is the whole
+ * route). Shared by assertions 5 and 6 below so both check the same shape of
+ * leak against the same seeded data, not two hand-maintained lists that can
+ * drift apart.
+ */
+function routeStringsFor(post) {
+  const out = [['apply value', post.applyValue]];
+  if (post.applyMethod === 'phone') out.push(['tel: route', `tel:${post.applyValue.replace(/\s+/g, '')}`]);
+  if (post.applyMethod === 'email') out.push(['mailto: route', `mailto:${post.applyValue}`]);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
-// Assertion 5 of 5: the contact-route gate — spec §13's other named privacy
-// gate, alongside D2.
+// Assertion 5 of 6: the contact-route gate, whole-board case — spec §13's
+// other named privacy gate, alongside D2.
 //
 // `Board.tsx`'s own docblock states the rule: the apply route is "only ever
 // computed for display AFTER an application already exists" — `RouteDisplay`
 // mounts only once `applicationFor(post.id)` returns a row, so a post the
 // viewer has not applied to should carry no `href`, no `tel:`, no `mailto:`,
-// anywhere in the render. Absent, not CSS-hidden. Nothing before this
-// assertion checked that claim: a reviewer injected a live
-// `<a href="tel:...">` into the pre-confirm branch and 162 tests plus every
-// other smoke assertion stayed green, because the invariant held by
-// construction, not by anything that would have noticed if it stopped.
+// anywhere in `Board`'s DEFAULT render (no post being applied to).
+//
+// What this does NOT cover, and why assertion 6 exists: `Board` is rendered
+// here statically, through `renderToString`, so `applyingId` never leaves its
+// `useState(null)` default — the pre-confirm `ApplyDisclosureRow` branch is
+// never part of this render at all. A reviewer proved that gap by injecting a
+// live `<a href="tel:...">` into that branch: 162 tests plus every other
+// smoke assertion, this one included, stayed green, because the invariant
+// held by construction here, not by anything that would have noticed if it
+// stopped. The same route injected UNCONDITIONALLY in the row (outside the
+// branch) correctly failed this assertion — so this check is real, just
+// narrower than its name once implied. Assertion 6 renders the extracted
+// branch directly and is what actually watches it.
 //
 // Scoped to posts the viewer has NOT applied to. A member who HAS applied is
 // legitimately shown the route (that is what `RouteDisplay` is for) — testing
 // for its absence there would fail on correct behaviour, not a leak.
 //
-// The expected routes are read from the seeded store, not hardcoded, so this
-// follows the seed rather than needing hand-maintenance if it changes: every
-// un-applied post's `applyValue`, plus the exact `tel:`/`mailto:` string
-// `Board.tsx`'s own `routeFor` would build for a phone or email post (a link
-// or through-me post has no separate scheme to check — the bare value is the
-// whole route).
-//
 // Non-vacuous by construction, proven the same way the D2 detector is proven:
 // the set of routes under test must be asserted non-empty BEFORE their
 // absence is asserted, or this could pass by having nothing to find.
 // ---------------------------------------------------------------------------
-console.log('\nContact-route gate assertion (Board):\n');
+console.log('\nContact-route gate assertion, whole-board default render (Board):\n');
 
 try {
   const viewerId = 'm_ananya';
@@ -649,12 +680,7 @@ try {
   const posts = store.listPosts(now);
   const unapplied = posts.filter((p) => !store.applicationFor(p.id));
 
-  const routes = [];
-  for (const p of unapplied) {
-    routes.push(['apply value', p.applyValue]);
-    if (p.applyMethod === 'phone') routes.push(['tel: route', `tel:${p.applyValue.replace(/\s+/g, '')}`]);
-    if (p.applyMethod === 'email') routes.push(['mailto: route', `mailto:${p.applyValue}`]);
-  }
+  const routes = unapplied.flatMap(routeStringsFor);
 
   if (!routes.length) {
     throw new Error(
@@ -671,18 +697,84 @@ try {
   const leaked = routes.filter(([, v]) => containsValue(html, v));
   if (leaked.length) {
     fail(
-      'contact-route gate',
-      `Board's pre-confirm render leaks ${leaked.map(([k, v]) => `${k} "${v}"`).join(', ')} — a route must not ` +
-        `reach the DOM before Apply is confirmed`,
+      'contact-route gate (whole board)',
+      `Board's default render leaks ${leaked.map(([k, v]) => `${k} "${v}"`).join(', ')} — a route must not reach ` +
+        `the DOM before Apply is confirmed`,
     );
   } else {
     ok(
-      'contact-route gate',
-      `Board renders no apply route (bare value or tel:/mailto:) for any of ${unapplied.length} un-applied post(s)`,
+      'contact-route gate (whole board)',
+      `Board's default render carries no apply route (bare value or tel:/mailto:) for any of ${unapplied.length} ` +
+        `un-applied post(s) — this does not cover the pre-confirm branch itself; see assertion 6`,
     );
   }
 } catch (err) {
-  fail('contact-route gate', err.message);
+  fail('contact-route gate (whole board)', err.message);
+} finally {
+  store.setCurrentMember('m_ananya');
+}
+
+// ---------------------------------------------------------------------------
+// Assertion 6 of 6: the contact-route gate, pre-confirm case — the branch
+// assertion 5 cannot see.
+//
+// `ApplyDisclosureRow` (extracted out of `Board.tsx` for exactly this reason)
+// is rendered directly here, on its own, against a real seeded post the
+// viewer has not applied to — so `applyingId` gating no longer matters: this
+// render IS the pre-confirm branch, not a statically-rendered `Board` that
+// never reaches it. A route planted inside this component (the "show them
+// what they're about to use" mistake a well-meaning change would make) shows
+// up here even though assertion 5's whole-board render would never see it.
+//
+// Same non-vacuousness discipline as assertion 5 and the D2 detector: the set
+// of routes under test must be asserted non-empty before their absence is
+// asserted.
+//
+// What this does not cover: `ApplyDisclosureRow`'s wiring into `Board` itself
+// (that the right post and fields reach it, that `onConfirm`/`onCancel` are
+// bound correctly) is not re-proven by a render smoke test — that is what the
+// by-hand apply-flow walkthrough (Apply → disclosure → Confirm → route
+// appears) verifies, in a real browser, at both breakpoints checked for this
+// fix.
+// ---------------------------------------------------------------------------
+console.log('\nContact-route gate assertion, pre-confirm branch (ApplyDisclosureRow):\n');
+
+try {
+  const viewerId = 'm_ananya';
+  store.setCurrentMember(viewerId);
+  const posts = store.listPosts(now);
+  const unapplied = posts.filter((p) => !store.applicationFor(p.id));
+
+  if (!unapplied.length) {
+    throw new Error(
+      `${viewerId} has applied to every seeded post — there is no un-applied post left to render ` +
+        `ApplyDisclosureRow against; the detector cannot fail, so it proves nothing (did the seed change?)`,
+    );
+  }
+  const post = unapplied[0];
+  const routes = routeStringsFor(post);
+  ok(
+    'apply-disclosure-row detector',
+    `${routes.length} route string(s) to check for un-applied post ${post.id} — the set is non-empty`,
+  );
+
+  const fields = store.applyDisclosureFields();
+  const html = render(BoardMod.ApplyDisclosureRow, { post, fields, error: null, onConfirm: noop, onCancel: noop });
+  const leaked = routes.filter(([, v]) => containsValue(html, v));
+  if (leaked.length) {
+    fail(
+      'contact-route gate (pre-confirm)',
+      `ApplyDisclosureRow's render for ${post.id} leaks ${leaked.map(([k, v]) => `${k} "${v}"`).join(', ')} — a ` +
+        `route must not reach the DOM before Apply is confirmed`,
+    );
+  } else {
+    ok(
+      'contact-route gate (pre-confirm)',
+      `ApplyDisclosureRow renders no apply route (bare value or tel:/mailto:) for un-applied post ${post.id}`,
+    );
+  }
+} catch (err) {
+  fail('contact-route gate (pre-confirm)', err.message);
 } finally {
   store.setCurrentMember('m_ananya');
 }

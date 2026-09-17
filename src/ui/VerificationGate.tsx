@@ -1,6 +1,7 @@
 import type { FormEvent, ReactNode } from 'react';
 import { useState } from 'react';
 import {
+  RuleViolation,
   cancelNewSignIn,
   getCurrentMember,
   pendingNewSignIn,
@@ -41,6 +42,20 @@ import { Login } from './Login.tsx';
  *     `setCurrentMember`, called once the form below is submitted, both
  *     picks the new row and clears that flag in one write.
  */
+/**
+ * Store error codes this form knows how to point at a specific control —
+ * `submitVerification`'s two refusals (`test/store.test.ts` pins the codes
+ * themselves, including the whitespace-only cases that reach here after
+ * `.trim()`). Exported, unlike `PostComposer.tsx`'s equivalent (private
+ * there), so `test/` can pin the code-to-field wiring without a DOM — this
+ * form has no DOM-testing harness in this repo, so this mapping is the one
+ * part of `handleSubmit`'s error path a test can reach directly.
+ */
+export const FIELD_FOR_CODE: Record<string, string> = {
+  missing_name: 'name',
+  missing_linkedin: 'linkedinUrl',
+};
+
 export function VerificationGate({ children }: { children: ReactNode }) {
   const member = getCurrentMember();
 
@@ -135,6 +150,10 @@ function RejectedScreen({ member }: { member: Member }) {
   );
 }
 
+function ErrorText({ children }: { children: ReactNode }) {
+  return <p className="-mt-2 text-sm font-medium text-[var(--color-owed)]">{children}</p>;
+}
+
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-3">
@@ -168,19 +187,40 @@ function GetVerifiedForm({
   const [batch, setBatch] = useState<number>(currentYear);
   const [programme, setProgramme] = useState<Programme>(PROGRAMMES[0]);
   const [knownBy, setKnownBy] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
+  // The name field is `type="text"`, so the browser's own `required` check
+  // only tests for length zero — a whitespace-only value passes it, reaches
+  // here, and trims to `''`. `submitVerification` refuses that (and an
+  // equally blank LinkedIn URL, though `type="url"` value sanitization
+  // already strips whitespace there) with a `RuleViolation`. Caught here and
+  // surfaced inline, next to the field that failed — the same pattern
+  // `PostComposer.tsx`'s `handleSubmit` uses — rather than left to throw out
+  // of an event handler, which no error boundary catches and which a member
+  // would see as nothing at all: a dead submit button and a console
+  // exception.
   function handleSubmit(e: FormEvent<HTMLFormElement>): void {
     e.preventDefault();
-    const created = submitVerification({
-      googleSub: identity.googleSub,
-      email: identity.email,
-      name: name.trim(),
-      batch,
-      programme,
-      linkedinUrl: linkedinUrl.trim(),
-      knownBy: knownBy.trim() || null,
-    });
-    onSubmitted(created);
+    try {
+      const created = submitVerification({
+        googleSub: identity.googleSub,
+        email: identity.email,
+        name: name.trim(),
+        batch,
+        programme,
+        linkedinUrl: linkedinUrl.trim(),
+        knownBy: knownBy.trim() || null,
+      });
+      setErrors({});
+      onSubmitted(created);
+    } catch (err) {
+      if (err instanceof RuleViolation) {
+        const field = FIELD_FOR_CODE[err.code] ?? 'form';
+        setErrors({ [field]: err.message });
+      } else {
+        setErrors({ form: 'Something went wrong. Try again.' });
+      }
+    }
   }
 
   return (
@@ -193,19 +233,25 @@ function GetVerifiedForm({
         </p>
 
         <form className="mt-4 flex flex-col gap-4" onSubmit={handleSubmit}>
-          <Field label="Full name (as on LinkedIn)" required>
-            <Input value={name} onChange={(e) => setName(e.currentTarget.value)} required autoComplete="name" />
-          </Field>
+          <div>
+            <Field label="Full name (as on LinkedIn)" required>
+              <Input value={name} onChange={(e) => setName(e.currentTarget.value)} required autoComplete="name" />
+            </Field>
+            {errors.name ? <ErrorText>{errors.name}</ErrorText> : null}
+          </div>
 
-          <Field label="LinkedIn profile URL" hint="Stored as text. Loop never visits or reads it." required>
-            <Input
-              type="url"
-              value={linkedinUrl}
-              onChange={(e) => setLinkedinUrl(e.currentTarget.value)}
-              placeholder="https://linkedin.com/in/…"
-              required
-            />
-          </Field>
+          <div>
+            <Field label="LinkedIn profile URL" hint="Stored as text. Loop never visits or reads it." required>
+              <Input
+                type="url"
+                value={linkedinUrl}
+                onChange={(e) => setLinkedinUrl(e.currentTarget.value)}
+                placeholder="https://linkedin.com/in/…"
+                required
+              />
+            </Field>
+            {errors.linkedinUrl ? <ErrorText>{errors.linkedinUrl}</ErrorText> : null}
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Batch / graduation year" required>
@@ -232,6 +278,8 @@ function GetVerifiedForm({
           <Field label="Name one XLRI person who knows you (optional)">
             <Input value={knownBy} onChange={(e) => setKnownBy(e.currentTarget.value)} />
           </Field>
+
+          {errors.form ? <ErrorText>{errors.form}</ErrorText> : null}
 
           <div className="mt-1 flex items-center justify-end gap-2">
             <Button type="button" variant="ghost" onClick={onCancel}>

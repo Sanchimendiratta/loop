@@ -236,7 +236,10 @@ Per Lite §7, with `verification_case` folded into `member`:
 `report`
 
 `notification` carries an `emailed_at` column, reserved and unused, so email can
-be switched on later without rework (§5).
+be switched on later without rework (§5). It also carries a `pushed_at` column,
+reserved and unused the same way: a real backend actually delivering a web
+push would stamp it, and nothing in this build does (§9) —
+`store.savePushSubscription` records an endpoint, but nothing ever sends to it.
 
 ## 9. Push, and what it cannot do
 

@@ -116,6 +116,53 @@ function FilterGroup({ label, children }: { label: string; children: ReactNode }
   );
 }
 
+export interface ApplyDisclosureRowProps {
+  post: JobPost;
+  fields: string[];
+  error: string | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+/**
+ * The pre-confirm apply disclosure — spec §13's other named privacy gate,
+ * alongside D2: the hiring contact's phone or email must be absent from the
+ * DOM, not merely CSS-hidden, until Apply is actually confirmed (see
+ * `routeFor`/`RouteDisplay` above, and this file's own docblock).
+ *
+ * Pulled out of `Board`'s render so `scripts/smoke.mjs` can mount exactly
+ * this branch on its own. `Board` is rendered there statically, so
+ * `applyingId` never leaves its `useState(null)` default and this branch
+ * never appears in that render at all — which is exactly the gap a
+ * well-meaning "show them what they're about to use" change would land in,
+ * with nothing watching it. Rendering `ApplyDisclosureRow` directly, against
+ * a real un-applied post, is what closes that.
+ */
+export function ApplyDisclosureRow({ post, fields, error, onConfirm, onCancel }: ApplyDisclosureRowProps) {
+  return (
+    <tr className="border-b border-stone-100 bg-brand-50" data-apply-disclosure-for={post.id}>
+      <td colSpan={9} className="plain px-3 py-4">
+        <div className="max-w-xl">
+          <p className="text-sm font-semibold text-stone-900">Before you apply</p>
+          <p className="mt-1 text-sm text-stone-700">
+            Applying shares this with the poster: {formatFieldList(fields)}. Loop does not send your application
+            anywhere — you contact them yourself.
+          </p>
+          {error ? <p className="mt-2 text-sm font-medium text-[var(--color-owed)]">{error}</p> : null}
+          <div className="mt-3 flex gap-2">
+            <Button type="button" size="sm" variant="primary" onClick={onConfirm}>
+              Confirm application
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 /** Already applied: the route and the current status, never the Apply button. */
 function RouteDisplay({ post, application }: { post: JobPost; application: Application }) {
   const route = routeFor(post);
@@ -146,8 +193,8 @@ function RouteDisplay({ post, application }: { post: JobPost; application: Appli
  *
  * The one screen-specific rule this file owns is the apply route's absence
  * from the DOM until `applyToPost` actually runs — see the `applyingId`
- * branch below, which renders no route, link, email or phone at all until
- * that confirm.
+ * branch below, which mounts `ApplyDisclosureRow` (and renders no route,
+ * link, email or phone at all) until that confirm.
  */
 export function Board({ now }: BoardProps) {
   const [sort, setSort] = useState<SortMode>('connection');
@@ -453,28 +500,13 @@ export function Board({ now }: BoardProps) {
                     </tr>
 
                     {isApplying && !isOwnPost ? (
-                      <tr className="border-b border-stone-100 bg-brand-50">
-                        <td colSpan={9} className="plain px-3 py-4">
-                          <div className="max-w-xl">
-                            <p className="text-sm font-semibold text-stone-900">Before you apply</p>
-                            <p className="mt-1 text-sm text-stone-700">
-                              Applying shares this with the poster: {formatFieldList(disclosureFields)}. Loop does not
-                              send your application anywhere — you contact them yourself.
-                            </p>
-                            {applyError ? (
-                              <p className="mt-2 text-sm font-medium text-[var(--color-owed)]">{applyError}</p>
-                            ) : null}
-                            <div className="mt-3 flex gap-2">
-                              <Button type="button" size="sm" variant="primary" onClick={() => confirmApply(post.id)}>
-                                Confirm application
-                              </Button>
-                              <Button type="button" size="sm" variant="ghost" onClick={cancelApply}>
-                                Cancel
-                              </Button>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
+                      <ApplyDisclosureRow
+                        post={post}
+                        fields={disclosureFields}
+                        error={applyError}
+                        onConfirm={() => confirmApply(post.id)}
+                        onCancel={cancelApply}
+                      />
                     ) : null}
 
                     {isReporting ? (

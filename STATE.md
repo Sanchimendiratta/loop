@@ -43,7 +43,7 @@ Lite is eight screens, three sheets, no email, and its governing rule is
 ```sh
 npm install
 npm run dev       # http://localhost:5174
-npm run verify    # typecheck + 165 tests + render smoke (with the orphan check) + production build
+npm run verify    # typecheck + 168 tests + render smoke (with the orphan check) + production build
 ```
 
 One entry point (`index.html`), one persona switcher standing in for Google's
@@ -54,7 +54,7 @@ show without a real OAuth flow.
 
 ## Done and verified
 
-`npm run verify` is green: **typecheck clean · 165 tests passing across 14
+`npm run verify` is green: **typecheck clean · 168 tests passing across 15
 files · every screen-level component under `src/ui/` renders, with markup
 checked for `NaN`/`undefined`/`[object Object]` · the orphan check (module-
 and screen-level) · production build succeeds.**
@@ -71,7 +71,19 @@ carry their own positive control so they cannot pass vacuously:
   looking for is non-empty, then asserts their absence.
 
 Neither existed until the final review injected a live `tel:` link into the
-board's pre-confirm branch and watched the whole suite stay green.
+board's pre-confirm branch and watched the whole suite stay green. The
+contact-route gate itself then failed the same test a second time, in the
+final fix round: it asserted the whole-board render only, and `Board` is
+rendered statically by `scripts/smoke.mjs`, so `applyingId` never leaves its
+`useState(null)` default and the pre-confirm branch was never part of that
+render at all — a route planted there stayed invisible to it. The fix pulled
+that branch out of `Board.tsx` into its own component, `ApplyDisclosureRow`
+(exported, same markup and behaviour), so the smoke script can render it
+directly against a real un-applied post. The contact-route gate is now two
+assertions, not one: the whole-board render (every already-applied
+`RouteDisplay`, every not-yet-applying row) and `ApplyDisclosureRow` rendered
+on its own — each proven non-vacuous, each catching a route the other
+cannot.
 
 ### The three Lite decisions (design doc §3), and where they live
 
@@ -81,7 +93,10 @@ board's pre-confirm branch and watched the whole suite stay green.
 - **L2 — notifications are the portal bell + browser push, no email.**
   `notification.emailed_at` exists in the schema and is written as `null` on
   every notification, reserved so email could be switched on later without a
-  schema change — nothing reads it. `Bell.tsx`, `src/sw.ts`.
+  schema change — nothing reads it. `notification.pushed_at` is reserved the
+  same way: a real backend actually delivering a web push would stamp it, and
+  nothing in this build does — `store.savePushSubscription` records an
+  endpoint, but nothing ever sends to it. `Bell.tsx`, `src/sw.ts`.
 - **L3 — any verified member can post, no pre-approval queue.**
   `store.publishPost` has exactly two refusals (missing title, missing
   connection) plus one conditional one (a confidential post with no
@@ -104,7 +119,7 @@ board's pre-confirm branch and watched the whole suite stay green.
 
 | Module | What it does |
 |---|---|
-| `schema.ts` | Lite's **six** tables: `member`, `job_post`, `application`, `notification`, `push_subscription`, `report`. `verification_case` is folded into `member` (no appeals); `notification.emailed_at` is reserved and unused. |
+| `schema.ts` | Lite's **six** tables: `member`, `job_post`, `application`, `notification`, `push_subscription`, `report`. `verification_case` is folded into `member` (no appeals); `notification.emailed_at` and `notification.pushed_at` are both reserved and unused — the first so email could be switched on later without a schema change, the second because a real backend delivering a web push would stamp it and nothing in this build does. |
 | `messages.ts` | The five real §5.0 WhatsApp-forward messages, verbatim (emoji, broken lines, inconsistent labels included) |
 | `seed.ts` | The demo network — 8 members, the five real messages run through the actual parser, a deterministic function of `now` (pinned byte-for-byte by `test/seed.test.ts`) |
 | `store.ts` | **The repository boundary.** The only module that touches persistence, and the only place D2 and rule 2 (below) live. |
