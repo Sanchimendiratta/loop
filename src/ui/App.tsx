@@ -64,6 +64,10 @@ export function App() {
       signOut();
       return;
     }
+    // The signed-out placeholder below carries an empty value. It is a label
+    // for a state, not an account to switch to — and `setCurrentMember`
+    // rightly refuses an id no member has.
+    if (value === '') return;
     setCurrentMember(value);
   }
 
@@ -111,6 +115,18 @@ export function App() {
             className="w-56 !py-1 text-xs"
             aria-label="Switch persona"
           >
+            {/*
+              * With no session, `value` matches no option and a <select>
+              * falls back to displaying its first one — so the switcher read
+              * "Ananya Rao — verified" while the member was signed out and
+              * every scoped read was correctly returning empty. The state was
+              * right and the control was lying about it. This option exists so
+              * it has something true to display, and only while that state
+              * lasts.
+              */}
+            {member ? null : (
+              <option value="">Signed out — choose an account</option>
+            )}
             {personas.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} — {p.status}
