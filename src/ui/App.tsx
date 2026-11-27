@@ -1,74 +1,93 @@
 import { useState } from 'react';
-import { getCurrentMember, listCases, listPersonas, setCurrentMember, trackerFor } from '../data/store.ts';
+import {
+  beginNewSignIn,
+  getCurrentMember,
+  listPersonas,
+  signOut,
+  pendingCases,
+  setCurrentMember,
+} from '../data/store.ts';
 import { Avatar, Select } from './primitives.tsx';
 import { Admin } from './Admin.tsx';
 import { Board } from './Board.tsx';
-import { PostDetail } from './PostDetail.tsx';
-import { Directory } from './Directory.tsx';
-import { CompanyPage } from './CompanyPage.tsx';
-import { Profile } from './Profile.tsx';
-import { RequestComposer } from './RequestComposer.tsx';
-import type { ReferralAsk } from './RequestComposer.tsx';
-import { RequestDetail } from './RequestDetail.tsx';
-import { Requests } from './Requests.tsx';
+import { makeGoogleIdentity } from './Login.tsx';
+import { MyApplications } from './MyApplications.tsx';
+import { MyPosts } from './MyPosts.tsx';
 import { Shell } from './Shell.tsx';
-import { Tracker } from './Tracker.tsx';
 import type { NavItem } from './Shell.tsx';
 import { VerificationGate } from './VerificationGate.tsx';
 import { useNow, useStoreVersion } from './useStore.ts';
 
-type View = 'board' | 'tracker' | 'directory' | 'requests' | 'profile' | 'admin';
+/** Sentinel `<option>` values for the two "sign in fresh" entries below. Never a real member id, so `setCurrentMember` must never see one. */
+const NEW_XLRI_ACCOUNT = '__new_xlri__';
+const NEW_PERSONAL_ACCOUNT = '__new_personal__';
+const SIGN_OUT = '__sign_out__';
+
+// Lite's nav (Task 7): Board, the two personal sheets, and Admin for the one
+// member allowed to see it. `PostDetail`/`Directory`/`Tracker`/`Profile` do
+// not survive from v1.3 — Lite has no directory and no referral-request
+// object, so there is nothing left for those routes to show.
+type View = 'board' | 'applications' | 'posts' | 'admin';
 
 export function App() {
   useStoreVersion();
   const now = useNow();
   const [view, setView] = useState<View>('board');
-  const [openPostId, setOpenPostId] = useState<string | null>(null);
-  const [openRequestId, setOpenRequestId] = useState<string | null>(null);
-  const [openCompanyId, setOpenCompanyId] = useState<string | null>(null);
-  const [composerOpen, setComposerOpen] = useState(false);
-  const [composerAsk, setComposerAsk] = useState<ReferralAsk | null>(null);
 
-  // The one hand-off every "ask for a referral" entry point shares —
-  // `Directory.tsx`, `CompanyPage.tsx` and `PostDetail.tsx`'s bridge all raise
-  // the same `ReferralAsk` shape now, so there is exactly one handler here
-  // rather than one per shape.
-  function handleRequestReferral(req: ReferralAsk): void {
-    setComposerAsk(req);
-    setComposerOpen(true);
+  function handleNavigate(id: string): void {
+    setView(id as View);
   }
 
-  // Leaving the directory tab drops any company drill-down, so coming back
-  // to it later starts from the roster rather than wherever it was left.
-  function handleNavigate(id: string): void {
-    if (id !== 'directory') setOpenCompanyId(null);
-    setView(id as View);
+  /**
+   * The two sentinel options don't name a member, so they can't go through
+   * `setCurrentMember` — they hand a fabricated identity to
+   * `store.beginNewSignIn` instead, which takes priority over whatever
+   * session is already active (see that function's docblock). This is the
+   * one way to reach the Get-verified form (screen 2) other than a truly
+   * first-ever visit: signing in with a second Google account without first
+   * signing out of the one already open, exactly as this switcher itself
+   * stays reachable no matter what the active session's gate state is.
+   */
+  function handleSwitcherChange(value: string): void {
+    if (value === NEW_XLRI_ACCOUNT) {
+      beginNewSignIn(makeGoogleIdentity('astra.xlri.ac.in'));
+      return;
+    }
+    if (value === NEW_PERSONAL_ACCOUNT) {
+      beginNewSignIn(makeGoogleIdentity('gmail.com'));
+      return;
+    }
+    // The only route to screen 1. Every other option names or fabricates an
+    // identity; this one empties the session, which is the single state the
+    // gate renders `Login` for.
+    if (value === SIGN_OUT) {
+      signOut();
+      return;
+    }
+    // The signed-out placeholder below carries an empty value. It is a label
+    // for a state, not an account to switch to — and `setCurrentMember`
+    // rightly refuses an id no member has.
+    if (value === '') return;
+    setCurrentMember(value);
   }
 
   const member = getCurrentMember();
   const isVerified = member?.status === 'verified';
 
-  // Every demo identity, curated down to the six named personas (§4) plus the
-  // three filler accounts seeded in non-verified states (Task 14) — dumping
-  // all ~230 filler alumni into one <select> would bury the very three the
-  // gate exists to demonstrate. `m_fill_200` is verified (Tier C), so it drops
-  // out along with the rest.
-  const personas = listPersonas().filter((p) => !p.id.startsWith('m_fill_') || p.status !== 'verified');
+  // Every demo identity. Lite's seed is 8 named personas covering all three
+  // gate states, so there is no filler roster left to curate down.
+  const personas = listPersonas();
 
-  // Badge counts are store reads, gated the same way the gate itself is: an
-  // unverified viewer's own `trackerFor`/`listCases` calls already answer
-  // empty, but computing them at all here would be a habit worth not forming.
-  const owedCount = isVerified && member ? trackerFor(member.id, now).filter((r) => r.owed === 'you').length : 0;
-  const pendingCases = isVerified && member?.isAdmin ? listCases().filter((c) => c.decision === 'pending').length : 0;
+  // Viewer-scoped by the store: `pendingCases()` already returns [] for
+  // anyone who is not a verified admin, so this badge cannot leak a count.
+  const queueSize = pendingCases().length;
 
   const nav: NavItem[] = isVerified
     ? [
         { id: 'board', label: 'Board' },
-        { id: 'tracker', label: 'Tracker', badge: owedCount },
-        { id: 'directory', label: 'Directory' },
-        { id: 'requests', label: 'Requests' },
-        { id: 'profile', label: 'Profile' },
-        ...(member?.isAdmin ? [{ id: 'admin', label: 'Admin', badge: pendingCases }] : []),
+        { id: 'applications', label: 'My applications' },
+        { id: 'posts', label: 'My posts' },
+        ...(member?.isAdmin ? [{ id: 'admin', label: 'Admin', badge: queueSize }] : []),
       ]
     : [];
 
@@ -92,64 +111,49 @@ export function App() {
           {member ? <Avatar name={member.name} size={26} /> : null}
           <Select
             value={member?.id ?? ''}
-            onChange={(e) => setCurrentMember(e.currentTarget.value)}
+            onChange={(e) => handleSwitcherChange(e.currentTarget.value)}
             className="w-56 !py-1 text-xs"
             aria-label="Switch persona"
           >
+            {/*
+              * With no session, `value` matches no option and a <select>
+              * falls back to displaying its first one — so the switcher read
+              * "Ananya Rao — verified" while the member was signed out and
+              * every scoped read was correctly returning empty. The state was
+              * right and the control was lying about it. This option exists so
+              * it has something true to display, and only while that state
+              * lasts.
+              */}
+            {member ? null : (
+              <option value="">Signed out — choose an account</option>
+            )}
             {personas.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} — {p.status}
               </option>
             ))}
+            <option value={NEW_XLRI_ACCOUNT}>+ New Google sign-in — institute address</option>
+            <option value={NEW_PERSONAL_ACCOUNT}>+ New Google sign-in — personal address</option>
+            <option value={SIGN_OUT}>Sign out — show the sign-in screen</option>
           </Select>
         </div>
       </div>
 
       <div className="min-h-0 flex-1">
         <VerificationGate>
-          <Shell nav={nav} active={view} onNavigate={handleNavigate}>
-            {view === 'board' ? <Board now={now} onOpenPost={setOpenPostId} /> : null}
-            {view === 'tracker' ? (
-              <Tracker now={now} onOpenRequest={setOpenRequestId} onOpenPost={setOpenPostId} />
+          <Shell nav={nav} active={view} onNavigate={handleNavigate} now={now}>
+            {/* No detail screen — Task 8 rewrote the board to expand a row
+                in place instead, so there is nothing for a post id to open
+                into. */}
+            {view === 'board' ? <Board now={now} /> : null}
+            {view === 'applications' ? (
+              <MyApplications now={now} onBrowseBoard={() => setView('board')} />
             ) : null}
-            {view === 'directory' ? (
-              openCompanyId ? (
-                <CompanyPage
-                  companyId={openCompanyId}
-                  now={now}
-                  onBack={() => setOpenCompanyId(null)}
-                  onRequestReferral={handleRequestReferral}
-                />
-              ) : (
-                <Directory now={now} onOpenCompany={setOpenCompanyId} onRequestReferral={handleRequestReferral} />
-              )
-            ) : null}
-            {view === 'requests' ? <Requests now={now} /> : null}
-            {view === 'profile' ? <Profile /> : null}
+            {view === 'posts' ? <MyPosts now={now} onPostRole={() => setView('board')} /> : null}
             {view === 'admin' ? <Admin now={now} /> : null}
           </Shell>
         </VerificationGate>
       </div>
-
-      {openPostId ? (
-        <PostDetail
-          postId={openPostId}
-          now={now}
-          onClose={() => setOpenPostId(null)}
-          onRequestReferral={handleRequestReferral}
-        />
-      ) : null}
-
-      {openRequestId ? (
-        <RequestDetail requestId={openRequestId} now={now} onClose={() => setOpenRequestId(null)} />
-      ) : null}
-
-      <RequestComposer
-        open={composerOpen}
-        prefill={composerAsk}
-        onClose={() => setComposerOpen(false)}
-        onSent={() => setComposerOpen(false)}
-      />
     </div>
   );
 }

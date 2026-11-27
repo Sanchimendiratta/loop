@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Bell } from './Bell.tsx';
 import { cx } from './primitives.tsx';
 
 export interface NavItem {
@@ -12,19 +13,24 @@ export interface ShellProps {
   nav: NavItem[];
   active: string;
   onNavigate: (id: string) => void;
+  /** Only for `Bell`'s relative-time labels — `Shell` itself has no other use for the clock. */
+  now: number;
   children: ReactNode;
 }
 
 /**
- * The authenticated app's chrome: nav with badge counts, a search entry, and
- * a footer. Deliberately dumb — it renders whatever `nav` it is given and has
- * no opinion on verification. `App` mounts this only inside
+ * The authenticated app's chrome: nav with badge counts, the bell, and a
+ * footer. Deliberately dumb about the nav — it renders whatever `nav` it is
+ * given and has no opinion on verification. `App` mounts this only inside
  * `VerificationGate`'s children, which is what keeps it (and the badge counts
- * it renders) off the screen for anyone the gate is blocking; the persona
- * switcher lives in `App`, above the gate, precisely so it stays reachable
- * when this does not.
+ * and notifications it renders) off the screen for anyone the gate is
+ * blocking; the persona switcher lives in `App`, above the gate, precisely so
+ * it stays reachable when this does not.
+ *
+ * `now` exists solely to hand `Bell` a clock — see that component for why a
+ * bare `Date.now()` inside it would be the wrong call.
  */
-export function Shell({ nav, active, onNavigate, children }: ShellProps) {
+export function Shell({ nav, active, onNavigate, now, children }: ShellProps) {
   return (
     <div className="flex h-full flex-col">
       <header className="z-10 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-stone-200 bg-white px-6 py-3 shadow-sm">
@@ -58,17 +64,12 @@ export function Shell({ nav, active, onNavigate, children }: ShellProps) {
           })}
         </nav>
 
-        {/* Directory owns real search (a later task); this is a reachable,
-            inert placeholder until then. */}
-        <div className="ml-auto">
-          <input
-            type="search"
-            disabled
-            placeholder="Search alumni, companies, roles…"
-            aria-label="Search"
-            className="w-56 rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-400 placeholder:text-stone-400 disabled:cursor-not-allowed"
-          />
-        </div>
+        {/* No search box. Lite has no directory and no member search, so an
+            inert input here would promise the user a feature that does not
+            exist — worse than a stale comment, which only misleads the next
+            engineer. */}
+
+        <Bell now={now} />
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>

@@ -1,214 +1,281 @@
-# Loop — where the build is up to
+# Loop Lite — where the build is up to
 
 Read this first if you are a fresh session picking this up.
 
 ## What this is
 
-An implementation of `../XLRI_Referrals_PRD_v1.md` (PRD v1.3): Loop, the XLRI
-alumni job-post and referral network. Scope: all of §7.1 Must, with the five
-deltas recorded in §3 below, plus the post→request bridge promoted out of
-§7.2 Should (DL2). Everything else in §7.2 Should, all of §7.3 Could, and all
-of §7.4 Won't is explicitly out of this pass.
+Loop Lite: a launchable subset of Loop, the XLRI (Jamshedpur) alumni job-post
+and referral network. This is branch `feat/loop-lite`, branched from `main`
+(the full v1.3 build, commit `c1f3312`) and then pruned before Lite-specific
+work began — it is **not** a rewrite of `main` and not a replacement for it;
+the two exist side by side so they can be compared before either ships.
 
-Design doc: `docs/superpowers/specs/2026-09-16-loop-design.md`
+- Source of truth for what Lite must do: `docs/XLRI_Referrals_LITE_v1.md` (Lite 1.0)
+- North star, not superseded: `../XLRI_Referrals_PRD_v1.md` (PRD v1.3, one level up from this repo)
+- Implementation design, with the reasoning behind every decision below:
+  `docs/superpowers/specs/2026-09-17-loop-lite-design.md`
+- The full v1.3 build this branched from: `main`, documented by that
+  branch's own `STATE.md`
+
+Lite is eight screens, three sheets, no email, and its governing rule is
+**"if a screen isn't in this doc, it isn't in v1."** Concretely, against
+`main`:
+
+- **Gone entirely:** the alumni directory and company pages, the referral
+  request as a separate object (an apply *is* the ask now — one status
+  ladder, not two), the nudge/email engine, the WhatsApp digest, duplicate
+  merge, the two-sided tracker, vouching/reputation, appeals, profile/privacy
+  settings, the referral-request-only screens (`Requests.tsx`,
+  `RequestComposer.tsx`, `RequestDetail.tsx`, `CapacityControls.tsx`,
+  `Tracker.tsx`, `Directory.tsx`, `CompanyPage.tsx`, `PostCard.tsx`).
+- **What replaced it:** three sheets — the job board, My applications, My
+  posts — plus Login, the verification gate/form, the post composer, and
+  Admin. That is the full eight-screen surface (§13's count includes the
+  gate's Pending/Rejected/Get-verified states as branches of one
+  `VerificationGate.tsx`, not separate screens).
+- **What survived unchanged, on purpose:** `core/parse.ts` (two heuristic
+  fixes against the real §5.0 messages already earned), `core/verification.ts`
+  (the multi-`@` Tier A bypass fix). Rebuilding either from the Lite doc from
+  scratch would have silently thrown both away.
 
 ## Running it
 
 ```sh
 npm install
 npm run dev       # http://localhost:5174
-npm run verify    # typecheck + 201 tests + render smoke + production build
+npm run verify    # typecheck + 168 tests + render smoke (with the orphan check) + production build
 ```
 
-There is one entry point (`index.html`) and one persona switcher standing in
-for Google's account chooser — the header dropdown next to the Loop mark
-switches between the six named personas from §4 and the three demo accounts
-seeded in a non-verified state, so the verification gate (D2) has something
-to show without a second login flow.
+One entry point (`index.html`), one persona switcher standing in for Google's
+account chooser — the header dropdown next to the Loop mark switches between
+the eight seeded personas (six verified across every connection type, one
+pending, one rejected), so D2 and the verification gate have something to
+show without a real OAuth flow.
 
 ## Done and verified
 
-`npm run verify` is green: **typecheck clean · 201 tests passing across 15
-files · every screen-level component under `src/ui/` renders (16 of 17
-files — `primitives.tsx` is a component library, not a screen; see
-`scripts/smoke.mjs`'s closing note) · production build succeeds.**
+`npm run verify` is green: **typecheck clean · 168 tests passing across 15
+files · every screen-level component under `src/ui/` renders, with markup
+checked for `NaN`/`undefined`/`[object Object]` · the orphan check (module-
+and screen-level) · production build succeeds.**
 
-### Logic (`src/core`, TypeScript, unit-tested, no build step)
+Two of those smoke checks guard the privacy gates spec §13 names, and both
+carry their own positive control so they cannot pass vacuously:
+
+- **the D2 gate**, run as a pending viewer *and* as a signed-out one. Login's
+  demo-account roster is excluded **by name**, not by a blanket rule, and the
+  helper that excludes it throws if its marker moves rather than silently
+  widening.
+- **the contact-route gate** — a non-member's phone or email must not reach the
+  DOM before Apply is confirmed. It first asserts the set of routes it is
+  looking for is non-empty, then asserts their absence.
+
+Neither existed until the final review injected a live `tel:` link into the
+board's pre-confirm branch and watched the whole suite stay green. The
+contact-route gate itself then failed the same test a second time, in the
+final fix round: it asserted the whole-board render only, and `Board` is
+rendered statically by `scripts/smoke.mjs`, so `applyingId` never leaves its
+`useState(null)` default and the pre-confirm branch was never part of that
+render at all — a route planted there stayed invisible to it. The fix pulled
+that branch out of `Board.tsx` into its own component, `ApplyDisclosureRow`
+(exported, same markup and behaviour), so the smoke script can render it
+directly against a real un-applied post. The contact-route gate is now two
+assertions, not one: the whole-board render (every already-applied
+`RouteDisplay`, every not-yet-applying row) and `ApplyDisclosureRow` rendered
+on its own — each proven non-vacuous, each catching a route the other
+cannot.
+
+### The three Lite decisions (design doc §3), and where they live
+
+- **L1 — no directory, no separate request object.** Applying to a post *is*
+  the ask; one `application` row, one status ladder. `store.applyToPost` /
+  `store.myApplications`.
+- **L2 — notifications are the portal bell + browser push, no email.**
+  `notification.emailed_at` exists in the schema and is written as `null` on
+  every notification, reserved so email could be switched on later without a
+  schema change — nothing reads it. `notification.pushed_at` is reserved the
+  same way: a real backend actually delivering a web push would stamp it, and
+  nothing in this build does — `store.savePushSubscription` records an
+  endpoint, but nothing ever sends to it. `Bell.tsx`, `src/sw.ts`.
+- **L3 — any verified member can post, no pre-approval queue.**
+  `store.publishPost` has exactly two refusals (missing title, missing
+  connection) plus one conditional one (a confidential post with no
+  descriptor) — no admin gate in between.
+
+### Logic (`src/core`, unit-tested, no build step)
 
 | Module | What it does |
 |---|---|
-| `parse.ts` | Paste → structured fields + confidence + source span (D12) |
-| `disclosure.ts` | Relationship rung × destination → the card's one sentence (D13) |
-| `rank.ts` | Board order: connection rung, then freshness, then recency (D16) |
-| `freshness.ts` | Confirm-or-decay clock — "I don't know" is a first-class answer (D14) |
-| `dedupe.ts` | Normalised apply-route + title → merges duplicate forwards (§5.1) |
-| `requests.ts` | The referral request state machine, `stateOwner` written on every edge (§5.2) |
-| `nudges.ts` | Who owes the next update, and when to chase them |
-| `capacity.ts` | Referrer intake caps — the seeker side is uncapped (DL1) |
-| `verification.ts` | Tiers A/B/C, the one appeal (§6) |
-| `privacy.ts` | Viewer-scoped visibility (D2, D6) |
-| `time.ts` | Day-window arithmetic |
+| `parse.ts` | Paste → structured fields + confidence + source span; a field below `MIN_CONFIDENCE` renders empty, never guessed |
+| `disclosure.ts` | Connection rung → the board's one honest sentence, and the rung ranking order |
+| `rank.ts` | Board order: connection rung, then recency — a stale post sinks because it is older, not through a separate rule |
+| `freshness.ts` | `postAge`: a post 30+ days old greys and sinks; nothing is ever hidden |
+| `applications.ts` | The status ladder, labels, and the 14-day stale-application dot |
+| `notifications.ts` | Notification body text per event kind, unread counts |
+| `verification.ts` | Domain auto-verify vs. admin review (Tier A/B) |
+| `time.ts` | Day-window arithmetic (`daysBetween`, `DAY_MS`) |
 
 ### Data (`src/data`)
 
 | Module | What it does |
 |---|---|
-| `schema.ts` | Entity shapes and enums (§9's data model) |
-| `seed.ts` | The demo network — 226 alumni, the five §5.0 messages run through the real parser |
-| `store.ts` | **The repository boundary** — the only module that touches persistence, and the only place the four rules in §4.1 live |
+| `schema.ts` | Lite's **six** tables: `member`, `job_post`, `application`, `notification`, `push_subscription`, `report`. `verification_case` is folded into `member` (no appeals); `notification.emailed_at` and `notification.pushed_at` are both reserved and unused — the first so email could be switched on later without a schema change, the second because a real backend delivering a web push would stamp it and nothing in this build does. |
+| `messages.ts` | The five real §5.0 WhatsApp-forward messages, verbatim (emoji, broken lines, inconsistent labels included) |
+| `seed.ts` | The demo network — 8 members, the five real messages run through the actual parser, a deterministic function of `now` (pinned byte-for-byte by `test/seed.test.ts`) |
+| `store.ts` | **The repository boundary.** The only module that touches persistence, and the only place D2 and rule 2 (below) live. |
 
 ### UI (`src/ui`, React 19 + TypeScript + Tailwind 4, built by Vite)
 
 | Module | Screen |
 |---|---|
-| `App.tsx` | Shell, nav, persona switcher, the one hand-off every "ask for a referral" entry point shares |
-| `Board.tsx` | The job board — filters plus connection-first ranking |
-| `Tracker.tsx` | The two-sided tracker (DL2) — Needs you / Waiting on others / Your posts |
-| `Directory.tsx` | Alumni directory — search, filters, report |
-| `CompanyPage.tsx` | One company's open-to-referring alumni |
-| `PostCard.tsx` / `PostDetail.tsx` | The standard job card, and its full detail view (apply, confirm, bridge) |
-| `PostComposer.tsx` | Paste-to-parse, six required fields, both disclosures (D12/D13) |
-| `Requests.tsx` / `RequestComposer.tsx` / `RequestDetail.tsx` | Sent/incoming lists, the ask, the shared timeline |
-| `CapacityControls.tsx` | A referrer's own intake caps — DL1's one surviving volume control |
-| `Profile.tsx` | Profile fields, resume (filename only), the privacy panel |
-| `Admin.tsx` | Verification queue + audit trail, reports/takedown, the WhatsApp digest |
-| `VerificationGate.tsx` | D2's front door — one of five states, read once |
-| `Shell.tsx` / `primitives.tsx` | Chrome and the shared building blocks (`Button`, `Chip`, `Modal`, `TONE`, …) |
+| `Login.tsx` | Screen 1 — Google sign-in stand-in (two simulated domains) + the persona switcher's list |
+| `VerificationGate.tsx` | D2's front door: Get-verified form, Pending screen, Rejected screen, or `children` — one of four, read once from `getCurrentMember()` |
+| `Board.tsx` | The job board sheet — filters, connection-first ranking, inline apply, inline report |
+| `PostComposer.tsx` | Paste-to-fill (`function`/`connection` always manual, by design) or six fields typed by hand |
+| `MyApplications.tsx` | My-applications sheet — one-tap status ladder, the 14-day stale dot |
+| `MyPosts.tsx` | My-posts sheet — applicant list per post, the Filled confirm step |
+| `Admin.tsx` | The whole admin tool: verification queue, decided audit trail, reports → delete |
+| `Shell.tsx` / `Bell.tsx` | Chrome, nav, and the bell (in-session `Notification` API, no background delivery) |
+| `primitives.tsx` / `useStore.ts` | Shared building blocks and the two `useNow`/`useStoreVersion` hooks — no screen of their own |
 
 ## The repository boundary, and its one test-only hole
 
 **Every UI read and write goes through `src/data/store.ts`.** No component
-under `src/ui/` calls `localStorage`, imports `core/privacy.ts` directly, or
-calls `store.getState()`. `getState()` is documented in `store.ts` itself as
-TEST-ONLY: it is the one function that answers without asking who is
-looking, handing back the full, unscoped workspace — a blocked-company list
-`toPublicMember` exists to strip, every private 1:1 request in the network.
-It exists so the test suite can place a fixture and check what a *scoped*
-read did or did not return, which is impossible if the only way in is
+under `src/ui/` calls `localStorage`, imports `core/privacy.ts` (deleted in
+Lite — D2 now lives in `store.viewerOrNull()`), or calls `store.getState()`.
+`getState()` is documented in `store.ts` as TEST-ONLY: it answers without
+asking who is looking, bypassing D2 and rule 2 (below) at once. It exists so
+tests (and this smoke script) can assert on the unscoped truth to check what
+a *scoped* read did or did not return — impossible if the only way in is
 already filtered.
 
-This is mechanically enforced, not just documented: `npm run smoke`
-(folded into `npm run verify`) statically greps every `.ts`/`.tsx` file
-under `src/ui/` for a call or import of `getState`, a reference to
-`localStorage`, or an import of `core/privacy.ts`, and fails the build with
-an explanation of *why* — not just that it matched — if any file trips it.
-This is the only mechanical guard on the boundary the rest of the privacy
-architecture rests on; nothing else in CI would catch a screen that grew a
-`getState()` call.
+This is mechanically enforced, not just documented: `npm run smoke` (folded
+into `npm run verify`) statically greps every `.ts`/`.tsx` file under
+`src/ui/` for a call or import of `getState`, a reference to `localStorage`,
+or an import of `core/privacy.ts`, and fails the build — with an explanation
+of *why*, not just that it matched — if any file trips it.
 
-## The DL1–DL5 deltas, and why they exist
+The same script also runs an **orphan check**: any module under `src/` that
+nothing else in `src/` imports fails the build (excluding `main.tsx`, the
+Vite entry, and `sw.ts`, registered by URL). This is the mechanical half of
+the design doc's §2 argument against pruning a branch and leaving vestiges —
+Task 1's post-visibility-implemented-four-times bug on `main` is exactly the
+class of thing it is meant to catch. It has a narrower, screen-shaped cousin
+right next to it: every `src/ui/*.tsx` file must be rendered by the smoke
+script or named, with a reason, on an exempt list (currently `Bell.tsx`,
+rendered inside `Shell`'s render rather than standalone, and `primitives.tsx`,
+a component library with no screen-level target of its own) — because a
+module only `App.tsx` imports is not an orphan by the first check's
+definition, but it can still have zero automated coverage. That gap was real
+once: as of Task 11, `MyApplications.tsx`, `MyPosts.tsx` and `Login.tsx`
+existed with no render coverage of any kind. Both checks are green now.
 
-Recorded in full in the design doc §3; summarised here so a later reader
-does not "fix" them back.
+## Two rules the store enforces on every read, no exception
 
-**DL1 — Seeker outreach is uncapped.** The PRD's max-open-requests-per-seeker,
-one-open-request-per-company, and D5's hard block on a new ask while an
-earlier loop sits un-closed are all removed. Supply is protected at the
-*referrer's* end instead — max open requests to a referrer, max per month, a
-pause toggle, an auto-decline message (`capacity.ts`, `CapacityControls.tsx`)
-— never by stopping the seeker on the way out. What replaces the hard block
-is visibility: the tracker (DL2) plus the nudge engine make the owing party
-obvious rather than making the asking party wait. The one guard DL1 keeps is
-the duplicate-*submission* check — two alumni actually filing the same seeker
-for the same role costs a referrer their bonus and creates an ATS conflict,
-which is an external harm, not supply protection. `npm run smoke`'s DL1-shaped
-proof is indirect (three requests to three alumni at Foodhak, no block hit);
-the walkthrough report has the direct one.
+1. **D2 — an unverified account reads nothing.** `store.viewerOrNull()` is
+   the one gate every exported read begins with; a `pending` or `rejected`
+   member gets `[]`/`null` back from everything except their own submitted
+   evidence (name, batch, programme, LinkedIn, `knownBy` — theirs to see,
+   never a leak). Asserted in `scripts/smoke.mjs` against `App`'s full render
+   (calibrated with a positive control against a verified viewer first, so
+   the detector is proven able to fail), for both a pending viewer and a
+   signed-out one, and walked by hand in a real browser for this task (see
+   the Task 14 report).
 
-**DL2 — A two-sided tracker, and the post→request bridge.** The PRD has a
-poster dashboard and a shared per-request timeline, but no single surface
-where a member sees everything they owe across both objects (a post and a
-request). `Tracker.tsx` is that surface, and its central claim is that an
-overdue referral request and a 14-day-unanswered application row render
-*identically* — same border colour, same chip styling, same CTA weight —
-distinguished only by a neutral kind label, never by colour or urgency
-styling (`TONE` in `primitives.tsx` is keyed on who owes, never on what kind
-of row it is). The post→request bridge (§7.2, normally Should-have) is
-promoted into scope because reaching out from a post's alumni list is exactly
-what the tracker's premise needs to be demonstrable.
+   **One deliberate, named exemption:** `store.listPersonas()` is ungated on
+   purpose, and both `Login.tsx` and `App.tsx`'s switcher render it as a
+   roster of buttons — so with **no session at all**, the Login screen
+   discloses all eight members' names and gate states, including who is
+   pending and who was rejected (Vikram Bose, in the current seed). This is
+   demo auth scaffolding standing in for Google's own account chooser (design
+   doc §6 item 1); it has to sit above D2, not behind it, or a member stuck on
+   a pending or rejected persona would have no way to switch to a verified
+   one. Real Google sign-in removes the whole affordance, roster included. It
+   is bounded on purpose — a name and a gate state, nothing else — and the
+   smoke script's D2 case excludes exactly that roster by name, not member
+   names in general, so the assertion cannot be quietly weakened by widening
+   the exclusion.
+2. **Rule 2 — an applicant's details reach exactly one person: that post's
+   poster.** `store.applicantsFor(postId)` is the *only* place a member ever
+   reads another member's data, and it has no admin branch on purpose — "the
+   rule has one exception" is how a rule stops being one. Pinned three ways:
+   `test/store.test.ts`, `scripts/smoke.mjs`'s field-scoping assertion (which
+   checks a real four-applicant post from every other seeded member,
+   including the admin persona, and gets `[]` every time), and hand-checked
+   in a browser for this task.
 
-**DL3 — Two PRD §12 questions are not implemented.** No courtesy email to a
-listed hiring contact; no prompt asking a *Connected* poster to flag
-applicants. D13's required controls all ship regardless: the consent tick,
-reveal-on-apply, the contact-removal link, and the underlying 48h SLA.
+Two more invariants worth knowing before touching `Board.tsx` or `store.ts`:
 
-**DL4 — No Supabase.** §9 specifies Postgres + row-level security; not
-reachable in this pass. `src/data/store.ts` stands in as the one repository
-boundary, and privacy is a **read-time filter** applied inside that file's
-read functions (never a conditional re-implemented per screen) — that is
-what makes it a boundary a later Supabase swap could replace wholesale,
-changing nothing above it.
+- **The apply route is absent from the DOM, not just hidden, before Apply.**
+  `Board.tsx` renders no `href`/`mailto:`/`tel:` for a post until
+  `applyToPost` has actually run — `RouteDisplay` only mounts once
+  `applicationFor(post.id)` returns a row. Confirmed in this task's
+  walkthrough by grepping full page HTML for the exact apply value before and
+  after confirming.
+- **Nothing in this app fetches, embeds, or previews a LinkedIn URL** (§7.4).
+  Every LinkedIn value — the pending screen's own evidence, `MyPosts.tsx`'s
+  applicant rows, `Admin.tsx`'s queue — renders as a plain `<a>` the viewer
+  clicks themselves. There is no fetch, no `<img>` favicon lookup, no
+  metadata call anywhere in `src/`.
 
-**DL5 — No LLM parser.** §9 specifies an LLM call behind a JSON schema; there
-is no key and no network call here. `src/core/parse.ts` is the deterministic
-layer §9 already requires underneath any model, built behind an interface a
-real model could satisfy later. Its governing rule — a low-confidence field
-renders **empty, never guessed** — is what makes the weaker parser degrade
-into "one more field to type" instead of a wrong post silently going live.
+## Honest limitations, stated rather than hidden
 
-**The measured cost of DL5**, from running the real parser against all five
-of §5.0's messages and confirming the same counts in a browser (see the Task
-25 walkthrough report): company-name extraction is deliberately conservative
-— three of the five messages withhold the company on purpose, and the parser
-correctly leaves that field blank rather than guessing, which is one typed
-edit (the confidential descriptor) on each of those three. MSG_4 and MSG_5
-name their company plainly and need zero typed edits. MSG_2 is the one
-genuine parser weakness: its title parses as *"for a Strategy role with a
-Mumbai-based MNC insurer."* at confidence 0.6 — above the 0.5 threshold, so
-it pre-fills wrong rather than blank, and needs a second typed edit. This was
-ruled on during the build (Task 18): the honest per-message count is
-**MSG_1: 1, MSG_2: 2, MSG_3: 1, MSG_4: 0, MSG_5: 0** typed edits, not a
-uniform "at most one" — a title visibly starting "for a" is not
-acceptable-looking enough to ship as a silent defect, so the fall-through
-confidence was deliberately left as-is rather than forced blank to hide the
-gap. The cheap fix (stripping a leading "for a|an|the" before the title
-fallback) was deferred to a future pass rather than spent on a headline
-metric here.
+- **Background push cannot work.** This build has no server
+  (`src/data/store.ts` is `localStorage` only), and Web Push delivery needs
+  one to hand a subscription to. The bell, unread counts, the three
+  notification events, the service worker and the subscription shape are all
+  **built**; in-session delivery via the `Notification` API **works**;
+  delivery while the member is not on the site **cannot work**, and
+  `Bell.tsx`'s own copy says so rather than simulating it.
+- **No appeals.** Lite folds `verification_case` into `member` (design doc §3,
+  following the source spec) — there is no second-reviewer path. A rejected
+  member reads the decision note and is told who to contact
+  (`VerificationGate.tsx`'s `RejectedScreen`), not offered a retry button.
+- **No confidential-search mode**, because there is nothing public to be
+  absent from: Lite has no directory and no "open to work" wall. Applying
+  discloses to that post's poster and only that poster, and every screen that
+  mentions it says so in plain language rather than promising a toggle that
+  does nothing (the design doc's cautionary example, from `main`'s own
+  `privacy.confidentialSearch` field, which shipped inert once).
+- **`getState()` is test-only and mechanically guarded** — see above. It is
+  the only intentional hole in the repository boundary, and it cannot be
+  reached from `src/ui/` without failing `npm run smoke`.
+- **The parser's company-name weakness**, measured honestly rather than
+  tuned to look good: run live, through the paste box, against all five real
+  §5.0 messages, the count of fields still needing to be typed by hand (of 7:
+  title, company/descriptor, location, experience, apply route, plus
+  `function` and `connection`, which are never parsed by design) is **3, 3,
+  3, 2, 2**. In every case but one the only blank is the confidential
+  descriptor (msgs 1–3 all withhold the company name in the original
+  message, which the parser correctly leaves blank rather than guessing —
+  `MIN_CONFIDENCE` doing its job). The one real parser weakness: MSG_2's
+  title parses as *"for a Strategy role with a Mumbai-based MNC insurer."* —
+  non-null and therefore counted "filled" by a bare null-check, but not a
+  title anyone would actually publish as typed. `messages.ts` and `parse.ts`
+  were deliberately **not** touched to improve this number — it is a
+  measurement of what ships today, not a target to hit. Full counts and the
+  browser session that produced them are in the Task 14 report.
+- **Login is reachable via "Sign out" in the persona switcher.** It was not,
+  until the walkthrough above caught it: `currentMemberId` always named a
+  seeded row, so `VerificationGate`'s `!member` branch never ran and screen 1
+  of eight was unreachable by any navigation — while still passing every
+  automated check, including its own smoke render. Clearing `localStorage`
+  did not help, because `load()` reseeds.
 
-## Honest limitations, called out rather than hidden
+  `currentMemberId` is now `string | null` and `store.signOut()` produces the
+  empty session. The gate already routed correctly, so nothing there changed.
 
-- **Single-admin-seat limitation (§6).** §6 requires an appeal be reviewed by
-  a *second* admin. The demo workspace has exactly one admin seat
-  (`m_admin`), so that check is **surfaced, not enforced** — `Admin.tsx`
-  shows the reviewer, date and reason of the original decision on every
-  appeal row so a human can honour the rule, but nothing in `store.ts`
-  refuses the same admin who rejected a case from also deciding its appeal.
-  Enforcing it here would make every appeal permanently undecidable in a
-  single-admin demo, which reads as broken rather than strict. A real
-  deployment with two or more admin accounts must add that check before
-  relying on it.
-- **`privacy.confidentialSearch` is reserved and unread.** The field exists
-  in `schema.ts` because §9's data model names it, and every write path
-  (`setPrivacy`) still carries it through unchanged. But no code anywhere
-  branches on it — it is not read by a single `if`. It was briefly a Profile
-  toggle that changed nothing when flipped, which is worse than no control at
-  all; the toggle was removed (Task 24) and D6's confidentiality is stated as
-  a **structural** fact instead: requests are 1:1 private (`canSeeRequest`),
-  every member read returns `PublicMember` with no activity attached, and
-  there is no public request feed or "open to work" wall to opt out of in the
-  first place. If a future feature needs a genuine opt-out, the schema field
-  is already there to wire up.
-- **The `getState()` guard is mechanical, not aspirational.** See above —
-  `npm run smoke` fails the build, with an explanation, if any file under
-  `src/ui/` calls it, touches `localStorage`, or imports `core/privacy.ts`
-  directly.
-- Two small, deferred data-integrity gaps in `Profile.tsx`'s `setProfile`:
-  `batch` is accepted as a raw number with no NaN/bounds check (clearing the
-  field before saving would write `NaN` to your own record), and `companyId`
-  is not validated against `listCompanies()`. Both are real but minor, and
-  were deferred rather than fixed mid-build (Task 24 review).
-- `parseCompensation`/other optional parsed fields are shown to the poster in
-  the composer before publish (Task 18 fix) — a parsed value never reaches a
-  published card unseen, which is the one part of DL5's honesty the build
-  does actively guarantee.
+  **If you touch sign-out, keep this in mind:** an empty session is an
+  *unverified* viewer, so D2 applies to it exactly as it applies to a pending
+  member — every viewer-scoped read must come back empty. There is a test
+  pinning that (`test/store.test.ts`, "a signed-out viewer reads nothing"). A
+  sign-out that left the board readable would be a worse bug than the
+  unreachable screen it was added to fix.
 
-## Not built (out of the agreed scope)
+## Deliberately not built (spec §14)
 
-Everything in PRD §7.2 Should beyond the promoted bridge (DL2), all of §7.3
-Could, and all of §7.4 Won't: no reciprocity gate on outcome stats, no saved
-searches, no referrer reputation stats, no request forwarding, no WhatsApp
-send integration (the digest is copy-to-clipboard for a human to paste — see
-D17 in `Admin.tsx`), no alerts, no courtesy email to a hiring contact or
-Connected-poster applicant prompt (DL3), no Supabase/Postgres/RLS (DL4), no
-LLM-backed parser (DL5). Google OAuth is simulated by the persona switcher;
-there is no real identity provider integration.
+No alumni directory. No searching for people. No messaging. No email. No
+resumes stored. No poster vetting. No automatic status change — the member
+tells the sheet, it remembers. No promise that any application goes
+anywhere. (This is the design doc's own §14, carried forward verbatim; it is
+not a gap list, it is the product's actual shape.)

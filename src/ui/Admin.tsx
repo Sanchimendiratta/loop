@@ -1,396 +1,414 @@
+/**
+ * Admin — screen 8, and per §3 "the entire admin tool".
+ *
+ * Three lists, nothing else:
+ *   1. The verification queue — a real `<table>` of name, batch, programme,
+ *      LinkedIn and requested-on, two buttons per row. `knownBy` rides along
+ *      as its own column because it is the second thread to pull on a thin
+ *      profile, and evidence the applicant submitted themselves rather than
+ *      something read off their row (the same distinction
+ *      `VerificationGate.tsx`'s `PendingScreen` draws for the exact same
+ *      field).
+ *   2. The decided list — an audit trail of who was ruled on, by whom, when,
+ *      and with what note. `store.decidedCases()` filters on `decidedById`
+ *      rather than `status`, because an institute address in
+ *      `submitVerification` also lands `status: 'verified'` with nobody
+ *      having decided anything.
+ *   3. Reports — §4's whole moderation story: the reported post, the reason,
+ *      and a delete.
+ *
+ * Approve commits in one tap — a low-stakes, reversible-by-re-review action.
+ * Reject and delete do not get that treatment: neither has an undo anywhere
+ * in the store (Lite has no appeals, §3, and `deletePost` is unconditional),
+ * so both get the same second, deliberate step — an inline row that opens in
+ * place of a plain click and requires an explicit, separate Confirm before
+ * anything commits. Reject additionally requires typing the note the
+ * rejected member will read on their gate; delete does not, because the
+ * report it acts on already carries the reason — the extra step here is the
+ * point, not more typing. Nothing here fetches, embeds or previews the
+ * LinkedIn URL — it is a plain anchor the admin clicks themselves, opening in
+ * a new tab, exactly like every other LinkedIn value in this app (§7.4).
+ */
 import { useState } from 'react';
+import type { FormEvent } from 'react';
 import {
-  decideVerification,
-  dismissReport,
-  getMember,
-  getPost,
-  listCases,
-  listReports,
   RuleViolation,
-  upholdReport,
-  whatsappDigest,
+  decideVerification,
+  decidedCases,
+  deletePost,
+  getPost,
+  listReports,
+  pendingCases,
 } from '../data/store.ts';
-import type { Report, VerificationCase } from '../data/schema.ts';
-import { Button, Card, Chip, EmptyState, Field, Tabs, Textarea } from './primitives.tsx';
-import type { Tone } from './primitives.tsx';
-
-export interface AdminProps {
-  now: number;
-}
-
-const HOUR_MS = 60 * 60 * 1000;
-const SLA_HOURS = 48;
-
-function hoursBetween(from: number, to: number): number {
-  return (to - from) / HOUR_MS;
-}
-
-function formatHours(hours: number): string {
-  return `${Math.round(Math.abs(hours))}h`;
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
+import type { PendingCase } from '../data/store.ts';
+import type { Report } from '../data/schema.ts';
+import { dayLabel } from '../core/time.ts';
+import { Button, Chip, EmptyState, Field, Textarea } from './primitives.tsx';
 
 /**
- * Copies to the clipboard without ever assuming the modern API is available
- * (or permitted) — a headless or otherwise locked-down browser falls back to
- * the old select-and-`execCommand` trick rather than silently doing nothing.
- * Nothing here reads the clipboard, and nothing here sends anything anywhere;
- * it is the one-way "get this text onto the device" operation the digest and
- * the evidence fields both need.
+ * The plain default note an approval carries. §3 requires every decision to
+ * record a note, but only a rejection needs the admin to author one by hand —
+ * it is the only decision the affected member ever reads back (`decisionNote`
+ * on `RejectedScreen`). Approval's note exists for the audit trail below, not
+ * for the approved member, so a fixed, honest sentence serves it.
  */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // Fall through to the legacy path below.
-  }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
-}
+const APPROVE_NOTE = 'Approved after review of the submitted LinkedIn profile and batch details.';
 
-function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
+function LinkedInLink({ url }: { url: string }) {
   return (
-    <Button
-      type="button"
-      variant="secondary"
-      size="sm"
-      onClick={() => {
-        void copyText(text).then((ok) => {
-          if (ok) {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          }
-        });
-      }}
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-medium break-all text-brand-700 underline"
     >
-      {copied ? 'Copied' : label}
-    </Button>
+      {url}
+    </a>
   );
 }
 
-function nameFor(memberId: string, fallback: string): string {
-  return getMember(memberId)?.name ?? fallback;
-}
-
-/**
- * One case awaiting a decision. Evidence is rendered as TEXT with a copy
- * button only — never a link, an iframe, or anything fetched (§7.4 is
- * absolute: nothing in this product reads or injects a LinkedIn page).
- */
-function CaseRow({ c, allCases, now }: { c: VerificationCase; allCases: VerificationCase[]; now: number }) {
-  const [action, setAction] = useState<'reject' | 'more_info' | null>(null);
-  const [notes, setNotes] = useState('');
+function QueueRow({ member, now }: { member: PendingCase; now: number }) {
+  const [rejecting, setRejecting] = useState(false);
+  const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const panelId = `admin-reject-${member.id}`;
 
-  const name = nameFor(c.memberId, c.evidence.nameAtGraduation);
-  const deadline = c.submittedAt + SLA_HOURS * HOUR_MS;
-  const remaining = hoursBetween(now, deadline);
-  const overdue = remaining < 0;
+  function approve(): void {
+    try {
+      decideVerification(member.id, 'verified', APPROVE_NOTE, now);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof RuleViolation ? err.message : 'Something went wrong. Try again.');
+    }
+  }
 
-  // §6: an appeal is a second look, by construction of a second admin — this
-  // finds the decision it is appealing so that second admin can be shown who
-  // made the first one, rather than trusting them to remember or ask around.
-  const original = c.isAppeal
-    ? allCases
-        .filter((o) => o.memberId === c.memberId && o.id !== c.id && o.decision === 'rejected' && o.submittedAt < c.submittedAt)
-        .sort((a, b) => b.submittedAt - a.submittedAt)[0]
-    : undefined;
-
-  function reset() {
-    setAction(null);
-    setNotes('');
+  function openReject(): void {
+    setRejecting(true);
     setError(null);
   }
 
-  function runDecide(decision: 'approved' | 'rejected' | 'more_info') {
+  function cancelReject(): void {
+    setRejecting(false);
+    setNote('');
+    setError(null);
+  }
+
+  function confirmReject(e: FormEvent): void {
+    e.preventDefault();
+    const trimmed = note.trim();
+    if (!trimmed) {
+      setError('Say why — the member sees this note on their gate.');
+      return;
+    }
     try {
-      decideVerification(c.id, decision, notes);
-      reset();
-    } catch (e) {
-      if (e instanceof RuleViolation) {
-        setError(e.message);
-      } else {
-        throw e;
-      }
+      decideVerification(member.id, 'rejected', trimmed, now);
+    } catch (err) {
+      setError(err instanceof RuleViolation ? err.message : 'Something went wrong. Try again.');
     }
   }
 
   return (
-    <li className="flex flex-col gap-3 px-4 py-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <p className="text-sm font-semibold text-stone-900">{name}</p>
-          <Chip tone="neutral">Tier {c.tier}</Chip>
-          {c.isAppeal ? <Chip tone="stale">Appeal</Chip> : null}
-        </div>
-        <Chip tone={overdue ? 'stale' : 'ok'}>{overdue ? `${formatHours(remaining)} overdue` : `${formatHours(remaining)} left`}</Chip>
-      </div>
-
-      {c.isAppeal ? (
-        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-500/30">
-          {original
-            ? `§6 requires a second admin: this decision was originally rejected by ${nameFor(original.reviewerId ?? '', 'an admin')} on ${new Date(original.decidedAt ?? 0).toLocaleDateString()} — "${original.notes}"`
-            : 'This is an appeal of a prior rejection — §6 requires a second admin to decide it.'}
-        </p>
-      ) : null}
-
-      <dl className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-1.5 rounded-lg bg-stone-50 p-3 text-xs">
-        <dt className="font-medium text-stone-500">LinkedIn</dt>
-        <dd className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-stone-800">{c.evidence.linkedinUrl}</span>
-          <CopyButton text={c.evidence.linkedinUrl} />
-        </dd>
-        <dt className="font-medium text-stone-500">Batch / programme</dt>
-        <dd className="text-stone-800">
-          {c.evidence.batch} · {c.evidence.programme}
-        </dd>
-        <dt className="font-medium text-stone-500">Name at graduation</dt>
-        <dd className="text-stone-800">{c.evidence.nameAtGraduation}</dd>
-      </dl>
-
-      {error ? <p className="text-xs font-medium text-[var(--color-owed)]">{error}</p> : null}
-
-      {action === null ? (
-        <div className="flex flex-wrap gap-2">
-          <Button variant="primary" size="sm" onClick={() => runDecide('approved')}>
-            Approve
-          </Button>
-          <Button variant="danger" size="sm" onClick={() => setAction('reject')}>
-            Reject
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => setAction('more_info')}>
-            Request more info
-          </Button>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2 rounded-lg bg-brand-50 p-3 ring-1 ring-brand-500/20">
-          <Field label={action === 'reject' ? 'Reason for rejecting' : 'What else is needed?'}>
-            <Textarea value={notes} onChange={(e) => setNotes(e.currentTarget.value)} />
-          </Field>
-          <p className="text-xs text-stone-500">
-            §6: every decision records the reviewer, a timestamp and this reason — a rejection with no note is not
-            appealable.
-          </p>
-          <div className="flex gap-2">
-            <Button variant="ghost" size="sm" onClick={reset}>
-              Cancel
+    <>
+      <tr className="border-b border-stone-100 align-top">
+        <td data-label="Name" className="px-3 py-3 font-medium text-stone-900">
+          {member.name}
+        </td>
+        <td data-label="Batch" className="px-3 py-3 tabular-nums text-stone-600">
+          {member.batch}
+        </td>
+        <td data-label="Programme" className="px-3 py-3 text-stone-600">
+          {member.programme}
+        </td>
+        <td data-label="Known by" className="px-3 py-3 text-stone-600">
+          {member.knownBy ? member.knownBy : <span className="italic text-stone-400">Not given</span>}
+        </td>
+        <td data-label="LinkedIn" className="px-3 py-3">
+          <LinkedInLink url={member.linkedinUrl} />
+        </td>
+        <td data-label="Requested" className="px-3 py-3 tabular-nums text-stone-600">
+          {dayLabel(member.requestedAt, now)}
+        </td>
+        <td data-label="Decide" className="px-3 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" variant="primary" onClick={approve}>
+              Approve
             </Button>
             <Button
-              variant={action === 'reject' ? 'danger' : 'primary'}
+              type="button"
               size="sm"
-              onClick={() => runDecide(action === 'reject' ? 'rejected' : 'more_info')}
+              variant="danger"
+              aria-expanded={rejecting}
+              aria-controls={panelId}
+              onClick={rejecting ? cancelReject : openReject}
             >
-              Confirm
+              Reject
             </Button>
           </div>
-        </div>
-      )}
-    </li>
-  );
-}
+          {error && !rejecting ? (
+            <p className="mt-1 text-xs font-medium text-[var(--color-owed)]">{error}</p>
+          ) : null}
+        </td>
+      </tr>
 
-function DecidedRow({ c }: { c: VerificationCase }) {
-  const tone: Tone = c.decision === 'approved' ? 'ok' : c.decision === 'rejected' ? 'neutral' : 'waiting';
-  return (
-    <li className="flex flex-col gap-1 px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-sm font-medium text-stone-900">{nameFor(c.memberId, c.evidence.nameAtGraduation)}</p>
-        <Chip tone={tone}>{c.decision}</Chip>
-        {c.isAppeal ? <Chip tone="stale">Appeal</Chip> : null}
-      </div>
-      <p className="text-xs text-stone-500">
-        {nameFor(c.reviewerId ?? '', 'An admin')} · {c.decidedAt ? new Date(c.decidedAt).toLocaleString() : '—'}
-      </p>
-      {c.notes ? <p className="text-xs text-stone-700">{c.notes}</p> : null}
-    </li>
+      {rejecting ? (
+        <tr id={panelId} className="border-b border-stone-100 bg-[var(--color-owed-soft)]">
+          <td colSpan={7} className="plain px-3 py-4">
+            <form className="max-w-xl" onSubmit={confirmReject}>
+              <Field
+                label={`Reason for rejecting ${member.name}`}
+                hint="This note is shown to them in place of the board — write it as if they will read it, because they will."
+                required
+              >
+                <Textarea value={note} onChange={(e) => setNote(e.currentTarget.value)} rows={3} required />
+              </Field>
+              {error ? <p className="mt-2 text-sm font-medium text-[var(--color-owed)]">{error}</p> : null}
+              <div className="mt-3 flex gap-2">
+                <Button type="submit" size="sm" variant="danger">
+                  Confirm reject
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={cancelReject}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }
 
 function VerificationQueue({ now }: { now: number }) {
-  const cases = listCases();
-  const needsReview = cases.filter((c) => c.decision === 'pending' || c.decision === 'more_info');
-  const decided = cases
-    .filter((c) => c.decision === 'approved' || c.decision === 'rejected')
-    .sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0));
-
-  const decisionHours = decided
-    .filter((c) => c.decidedAt !== null)
-    .map((c) => hoursBetween(c.submittedAt, c.decidedAt as number));
-  const med = median(decisionHours);
-  const underSla = decisionHours.length > 0 ? Math.round((decisionHours.filter((h) => h <= SLA_HOURS).length / decisionHours.length) * 100) : null;
+  const cases = pendingCases();
 
   return (
-    <div className="flex flex-col gap-6">
-      <section>
-        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold text-stone-900">Needs review</h2>
-          <p className="text-xs text-stone-500">
-            {/* §11: >95% of decisions land under 48h — the queue has to show this number to hold itself to it. */}
-            Median decision time: {med !== null ? formatHours(med) : '—'}
-            {underSla !== null ? ` · ${underSla}% under 48h (${decisionHours.length} decided)` : ''}
-          </p>
-        </div>
-        {needsReview.length === 0 ? (
-          <EmptyState title="Nothing is waiting on a decision." />
-        ) : (
-          <Card>
-            <ul className="divide-y divide-stone-200">
-              {needsReview.map((c) => (
-                <CaseRow key={c.id} c={c} allCases={cases} now={now} />
-              ))}
-            </ul>
-          </Card>
-        )}
-      </section>
-
-      <section>
-        <h2 className="mb-2 text-sm font-semibold text-stone-900">Decided — the audit trail</h2>
-        {decided.length === 0 ? (
-          <EmptyState title="No decisions recorded yet." />
-        ) : (
-          <Card>
-            <ul className="divide-y divide-stone-200">
-              {decided.map((c) => (
-                <DecidedRow key={c.id} c={c} />
-              ))}
-            </ul>
-          </Card>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function ReportRow({ report }: { report: Report }) {
-  const [error, setError] = useState<string | null>(null);
-  const reporterName = nameFor(report.reporterId, 'A member');
-  const targetName =
-    report.targetType === 'post'
-      ? (getPost(report.targetId)?.title ?? 'A post no longer on the board')
-      : nameFor(report.targetId, 'A member');
-
-  function run(action: () => void) {
-    try {
-      action();
-      setError(null);
-    } catch (e) {
-      if (e instanceof RuleViolation) {
-        setError(e.message);
-      } else {
-        throw e;
-      }
-    }
-  }
-
-  return (
-    <li className="flex flex-col gap-2 px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Chip tone="neutral">{report.targetType === 'post' ? 'Post' : 'Member'}</Chip>
-        <p className="text-sm font-semibold text-stone-900">{targetName}</p>
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold text-stone-900">Verification queue</h2>
+        <p className="text-xs text-stone-500">
+          {cases.length === 0 ? 'Nothing waiting.' : `${cases.length} waiting for a decision.`}
+        </p>
       </div>
-      <p className="text-sm text-stone-700">{report.reason}</p>
-      <p className="text-xs text-stone-500">
-        Reported by {reporterName} · {new Date(report.at).toLocaleString()}
-      </p>
-      {report.targetType === 'post' ? (
-        <p className="text-xs text-stone-500">This post is hidden from the board while the report is open.</p>
-      ) : null}
-      {error ? <p className="text-xs font-medium text-[var(--color-owed)]">{error}</p> : null}
-      <div className="flex gap-2">
-        <Button variant="danger" size="sm" onClick={() => run(() => upholdReport(report.id))}>
-          {report.targetType === 'post' ? 'Uphold — archive the post' : 'Uphold — suspend the member'}
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => run(() => dismissReport(report.id))}>
-          Dismiss
-        </Button>
-      </div>
-    </li>
-  );
-}
 
-function Reports() {
-  const reports = listReports();
-  return (
-    <section>
-      <h2 className="mb-2 text-sm font-semibold text-stone-900">Open reports</h2>
-      {reports.length === 0 ? (
-        <EmptyState title="No open reports." />
+      {cases.length === 0 ? (
+        <EmptyState title="Nothing waiting" body="Every submitted case has been reviewed." />
       ) : (
-        <Card>
-          <ul className="divide-y divide-stone-200">
-            {reports.map((r) => (
-              <ReportRow key={r.id} report={r} />
-            ))}
-          </ul>
-        </Card>
+        <div className="overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-stone-900/5">
+          <table className="stack-table w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-stone-200 text-xs font-semibold text-stone-500">
+                <th scope="col" className="px-3 py-2">Name</th>
+                <th scope="col" className="px-3 py-2">Batch</th>
+                <th scope="col" className="px-3 py-2">Programme</th>
+                <th scope="col" className="px-3 py-2">Known by</th>
+                <th scope="col" className="px-3 py-2">LinkedIn</th>
+                <th scope="col" className="px-3 py-2">Requested</th>
+                <th scope="col" className="px-3 py-2">Decide</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cases.map((member) => (
+                <QueueRow key={member.id} member={member} now={now} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
 }
 
-function Digest({ now }: { now: number }) {
-  const text = whatsappDigest(now);
+function DecidedList({ now }: { now: number }) {
+  const decided = decidedCases();
+
   return (
-    <section className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold text-stone-900">The WhatsApp digest</h2>
-      {/* D17: nothing here sends anything — automated posting into a WhatsApp
-          group would breach its terms, the same reasoning as §7.4's
-          no-scraping stance. The button copies; a human pastes it in. */}
-      <p className="text-xs text-stone-500">Paste this into the batch group.</p>
-      <Card className="p-3">
-        <pre className="whitespace-pre-wrap break-words text-sm text-stone-800">{text}</pre>
-      </Card>
-      <div>
-        <CopyButton text={text} label="Copy digest" />
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold text-stone-900">Decided</h2>
+        <p className="text-xs text-stone-500">The audit trail — every case a reviewer has ruled on.</p>
       </div>
+
+      {decided.length === 0 ? (
+        <EmptyState title="Nothing decided yet" body="Approvals and rejections will show up here." />
+      ) : (
+        <div className="overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-stone-900/5">
+          <table className="stack-table w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-stone-200 text-xs font-semibold text-stone-500">
+                <th scope="col" className="px-3 py-2">Name</th>
+                <th scope="col" className="px-3 py-2">Decision</th>
+                <th scope="col" className="px-3 py-2">Decided by</th>
+                <th scope="col" className="px-3 py-2">Decided</th>
+                <th scope="col" className="px-3 py-2">Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {decided.map((member) => (
+                <tr key={member.id} className="border-b border-stone-100 align-top last:border-b-0">
+                  <td data-label="Name" className="px-3 py-3 font-medium text-stone-900">
+                    {member.name}
+                  </td>
+                  <td data-label="Decision" className="px-3 py-3">
+                    <Chip tone={member.status === 'verified' ? 'ok' : 'owed'}>
+                      {member.status === 'verified' ? 'Approved' : 'Rejected'}
+                    </Chip>
+                  </td>
+                  <td data-label="Decided by" className="px-3 py-3 text-stone-600">
+                    {member.decidedByName}
+                  </td>
+                  <td data-label="Decided" className="px-3 py-3 tabular-nums text-stone-600">
+                    {member.decidedAt ? dayLabel(member.decidedAt, now) : '—'}
+                  </td>
+                  <td data-label="Note" className="px-3 py-3 text-stone-600">
+                    {member.decisionNote || <span className="italic text-stone-400">No note recorded</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }
 
-const TABS = [
-  { id: 'verification', label: 'Verification queue' },
-  { id: 'reports', label: 'Reports' },
-  { id: 'digest', label: 'WhatsApp digest' },
-];
+function ReportRow({ report, now }: { report: Report; now: number }) {
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const post = getPost(report.jobPostId);
+  const panelId = `admin-delete-${report.id}`;
 
-/**
- * The admin console: the §6 verification queue, §8 reports/takedown, and the
- * D17 WhatsApp digest. Every read here is admin-gated at the store (`listCases`,
- * `listReports`) or is the viewer's own — nothing is filtered again in this
- * file, and it goes through the store's public read/write functions only,
- * never the browser's persistence layer, the privacy module, or the store's
- * test-only whole-state escape hatch.
- */
-export function Admin({ now }: AdminProps) {
-  const [tab, setTab] = useState('verification');
+  function openConfirm(): void {
+    setConfirming(true);
+    setError(null);
+  }
+
+  function cancelConfirm(): void {
+    setConfirming(false);
+    setError(null);
+  }
+
+  function confirmDelete(): void {
+    try {
+      deletePost(report.jobPostId, now);
+      // No `setConfirming(false)` needed on success: a successful delete
+      // resolves the report, so `listReports()` drops this row on the next
+      // read and this component unmounts along with it.
+    } catch (err) {
+      setError(err instanceof RuleViolation ? err.message : 'Something went wrong. Try again.');
+    }
+  }
+
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <Tabs items={TABS} active={tab} onChange={setTab} />
-      {tab === 'verification' ? <VerificationQueue now={now} /> : null}
-      {tab === 'reports' ? <Reports /> : null}
-      {tab === 'digest' ? <Digest now={now} /> : null}
+    <>
+      <tr className="border-b border-stone-100 align-top last:border-b-0">
+        <td data-label="Post" className="px-3 py-3">
+          {post ? (
+            <>
+              <p className="font-medium text-stone-900">{post.title}</p>
+              {post.companyName ? <p className="text-xs text-stone-500">{post.companyName}</p> : null}
+            </>
+          ) : (
+            <span className="italic text-stone-400">This post no longer exists.</span>
+          )}
+        </td>
+        <td data-label="Reason" className="px-3 py-3 text-stone-700">
+          {report.reason}
+        </td>
+        <td data-label="Reported" className="px-3 py-3 tabular-nums text-stone-600">
+          {dayLabel(report.at, now)}
+        </td>
+        <td data-label="Action" className="px-3 py-3">
+          {post ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="danger"
+              aria-expanded={confirming}
+              aria-controls={panelId}
+              onClick={confirming ? cancelConfirm : openConfirm}
+            >
+              Delete post
+            </Button>
+          ) : null}
+          {error && !confirming ? (
+            <p className="mt-1 text-xs font-medium text-[var(--color-owed)]">{error}</p>
+          ) : null}
+        </td>
+      </tr>
+
+      {confirming ? (
+        <tr id={panelId} className="border-b border-stone-100 bg-[var(--color-owed-soft)]">
+          <td colSpan={4} className="plain px-3 py-4">
+            <div className="max-w-xl">
+              <p className="text-sm font-semibold text-stone-900">Delete this post?</p>
+              <p className="mt-1 text-sm text-stone-700">
+                This removes it for every member, including anyone who applied. It cannot be undone — there
+                is no recovering it afterwards.
+              </p>
+              {error ? <p className="mt-2 text-sm font-medium text-[var(--color-owed)]">{error}</p> : null}
+              <div className="mt-3 flex gap-2">
+                <Button type="button" size="sm" variant="danger" onClick={confirmDelete}>
+                  Confirm delete
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={cancelConfirm}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  );
+}
+
+function Reports({ now }: { now: number }) {
+  const reports = listReports();
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold text-stone-900">Reports</h2>
+        <p className="text-xs text-stone-500">
+          {reports.length === 0 ? 'Nothing reported.' : `${reports.length} open.`}
+        </p>
+      </div>
+
+      {reports.length === 0 ? (
+        <EmptyState title="Nothing reported" body="Reported posts will show up here, with the reason and a delete." />
+      ) : (
+        <div className="overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-stone-900/5">
+          <table className="stack-table w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-stone-200 text-xs font-semibold text-stone-500">
+                <th scope="col" className="px-3 py-2">Post</th>
+                <th scope="col" className="px-3 py-2">Reason</th>
+                <th scope="col" className="px-3 py-2">Reported</th>
+                <th scope="col" className="px-3 py-2">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.map((report) => (
+                <ReportRow key={report.id} report={report} now={now} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function Admin({ now }: { now: number }) {
+  return (
+    <div className="flex flex-col gap-8 p-6">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-lg font-semibold text-stone-900">Admin</h1>
+      </div>
+      <VerificationQueue now={now} />
+      <DecidedList now={now} />
+      <Reports now={now} />
     </div>
   );
 }

@@ -1,640 +1,666 @@
 import { beforeEach, describe, expect, test } from 'vitest';
 import * as store from '../src/data/store.ts';
-import { RuleViolation } from '../src/core/requests.ts';
+import { RuleViolation } from '../src/data/store.ts';
+import { buildSeed } from '../src/data/seed.ts';
+import { SCHEMA_VERSION } from '../src/data/schema.ts';
 
-const NOW = Date.UTC(2026, 8, 16);
+const NOW = Date.UTC(2026, 8, 17);
 
-beforeEach(() => {
-  // A fresh in-memory workspace per test; no localStorage in Node.
-  store.reset();
-});
+// The seed is built AT `NOW` and every write below is passed `NOW` explicitly,
+// so the suite is genuinely time-controlled rather than merely looking it:
+// `reset()` with no argument would build the fixtures at `Date.now()` while the
+// assertions reasoned about a fixed instant.
+beforeEach(() => { store.reset(NOW); });
 
-describe('rule 1 — the privacy filter (spec §4.1)', () => {
-  test('an unverified viewer reads nothing, rather than being redirected', () => {
-    const pending = store.listMembers().find((m) => m.status === 'pending');
-    store.setCurrentMember(pending!.id);
-    expect(store.listMembers()).toEqual([]);
+const asMember = (pred: (m: any) => boolean) => {
+  const m = store.getState().members.find(pred)!;
+  store.setCurrentMember(m.id);
+  return m;
+};
+
+/** The thrown rule's code, so a test can tell WHICH refusal it triggered. */
+const violationCode = (fn: () => unknown): string => {
+  try {
+    fn();
+  } catch (e) {
+    expect(e).toBeInstanceOf(RuleViolation);
+    return (e as RuleViolation).code;
+  }
+  throw new Error('expected a RuleViolation, but nothing was thrown');
+};
+
+describe('rule 1 — D2: an unverified or pending member reads nothing', () => {
+  test('a pending member reads no posts, no applications, no notifications', () => {
+    asMember((m) => m.status === 'pending');
     expect(store.listPosts(NOW)).toEqual([]);
-    expect(store.listRequests()).toEqual([]);
+    expect(store.myApplications(NOW)).toEqual([]);
+    expect(store.myNotifications()).toEqual([]);
+    expect(store.myPosts()).toEqual([]);
   });
 
-  test('a verified member reads only their own requests', () => {
-    const ananya = store.listMembers().find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    for (const r of store.listRequests()) {
-      expect(r.seekerId === ananya.id || r.referrerId === ananya.id).toBe(true);
-    }
+  test('a rejected member reads nothing either', () => {
+    asMember((m) => m.status === 'rejected');
+    expect(store.listPosts(NOW)).toEqual([]);
   });
 
-  test('a member who blocked a company is invisible to that company’s employees', () => {
-    // Setup only, and it has to come from the raw workspace now: `privacy` no
-    // longer rides along on a member read (see the PublicMember test below),
-    // which is the point. The assertion below is unchanged.
-    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
-    const blockedCompany = karan.privacy.blockedCompanyIds[0];
-    const employee = store.listMembers().find((m) => m.companyId === blockedCompany && m.id !== karan.id)!;
-    store.setCurrentMember(employee.id);
-    expect(store.listMembers().some((m) => m.id === karan.id)).toBe(false);
+  test('the remaining gated reads are gated too', () => {
+    const st = store.getState();
+    const post = st.posts[0];
+    asMember((m) => m.status === 'pending');
+    expect(store.getPost(post.id)).toBeNull();
+    expect(store.applicationFor(post.id)).toBeNull();
+    expect(store.posterName(post.posterId)).toBe('');
+    expect(store.applyDisclosureFields()).toEqual([]);
+  });
+
+  test('a pending member who owns a post still sees none of its applicants', () => {
+    // Placed as a fixture, because the seed has no pending poster: without the
+    // D2 gate, `applicantsFor` would answer for this member — they ARE the
+    // poster, which is the one thing rule 2 lets through.
+    const st = store.getState();
+    const pending = st.members.find((m) => m.status === 'pending')!;
+    const busiest = 'p_foodhak';
+    st.posts = st.posts.map((p) => (p.id === busiest ? { ...p, posterId: pending.id } : p));
+    store.setCurrentMember(pending.id);
+    expect(store.applicantsFor(busiest)).toEqual([]);
+    expect(store.myPosts()).toEqual([]);
+  });
+
+  test('a pending ADMIN reads nothing — D2 has no admin exception', () => {
+    const st = store.getState();
+    const pending = st.members.find((m) => m.status === 'pending')!;
+    st.members = st.members.map((m) => (m.id === pending.id ? { ...m, isAdmin: true } : m));
+    store.setCurrentMember(pending.id);
+    expect(store.pendingCases()).toEqual([]);
+    expect(store.listReports()).toEqual([]);
+    expect(store.listPosts(NOW)).toEqual([]);
+  });
+
+  test('a pending member cannot apply', () => {
+    const post = store.getState().posts[0];
+    asMember((m) => m.status === 'pending');
+    expect(() => store.applyToPost(post.id, NOW)).toThrow(RuleViolation);
+  });
+
+  test('a verified member reads the board', () => {
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    expect(store.listPosts(NOW).length).toBeGreaterThan(0);
+  });
+
+  test('the admin queue is admin-only, even for a verified member', () => {
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    expect(store.pendingCases()).toEqual([]);
+    expect(store.listReports()).toEqual([]);
+    asMember((m) => m.isAdmin);
+    expect(store.pendingCases().length).toBeGreaterThan(0);
+    expect(store.listReports().length).toBeGreaterThan(0);
   });
 });
 
-describe('rule 2 — the duplicate-submission guard (spec DL1)', () => {
-  test('a seeker may hold many open requests at one company', () => {
-    const ananya = store.listMembers().find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    const company = store.listCompanies()[0];
-    const referrers = store.alumniAt(company.id).filter((m) => m.id !== ananya.id && m.openToReferring).slice(0, 3);
-    expect(referrers.length).toBeGreaterThanOrEqual(2);
-    for (const r of referrers) {
-      expect(() =>
-        store.sendRequest({ referrerId: r.id, companyId: company.id, roleTitle: 'Analyst', pitch: 'hi', roleUrl: null, jobPostId: null }),
-      ).not.toThrow();
+describe('rule 2 — applicant details reach exactly one person', () => {
+  const busiestPost = () => {
+    const st = store.getState();
+    const counts = new Map<string, number>();
+    for (const a of st.applications) counts.set(a.jobPostId, (counts.get(a.jobPostId) ?? 0) + 1);
+    const postId = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    return st.posts.find((p) => p.id === postId)!;
+  };
+
+  test('the poster of a post sees its applicants in full, and correctly', () => {
+    const st = store.getState();
+    const post = busiestPost();
+    store.setCurrentMember(post.posterId);
+    const as = store.applicantsFor(post.id);
+    expect(as.length).toBeGreaterThanOrEqual(3);
+
+    // Compared against the real records, not `toHaveProperty` — which passes
+    // for any object that merely has the key, including one built from the
+    // wrong member.
+    for (const a of as) {
+      const m = st.members.find((x) => x.id === a.memberId)!;
+      const app = st.applications.find((x) => x.jobPostId === post.id && x.memberId === a.memberId)!;
+      expect(a, a.memberId).toEqual({
+        memberId: m.id,
+        name: m.name,
+        batch: m.batch,
+        programme: m.programme,
+        linkedinUrl: m.linkedinUrl,
+        status: app.status,
+        appliedAt: app.appliedAt,
+      });
     }
+
+    // Exactly who applied — no more, no fewer.
+    expect(new Set(as.map((a) => a.memberId))).toEqual(
+      new Set(st.applications.filter((a) => a.jobPostId === post.id).map((a) => a.memberId)),
+    );
   });
 
-  test('a second submission of the same seeker to the same role is refused', () => {
-    const submitted = store.getState().requests.find((r) => r.state === 'submitted')!;
-    store.setCurrentMember(submitted.seekerId);
-    const other = store.alumniAt(submitted.companyId).find((m) => m.id !== submitted.referrerId && m.openToReferring)!;
-    const dupe = store.sendRequest({
-      referrerId: other.id, companyId: submitted.companyId, roleTitle: submitted.roleTitle,
-      pitch: 'again', roleUrl: null, jobPostId: null,
-    });
+  test('a member who is not the poster sees no applicants', () => {
+    const st = store.getState();
+    const post = st.posts[0];
+    const other = st.members.find((m) => m.status === 'verified' && m.id !== post.posterId && !m.isAdmin)!;
     store.setCurrentMember(other.id);
-    store.advanceRequest(dupe.id, 'accepted');
-    expect(() => store.advanceRequest(dupe.id, 'submitted')).toThrow(RuleViolation);
+    expect(store.applicantsFor(post.id)).toEqual([]);
+  });
+
+  test('a fellow applicant on the same post sees no applicants', () => {
+    const st = store.getState();
+    const post = st.posts.find((p) => p.id === 'p_foodhak')!;
+    const fellow = st.applications.find((a) => a.jobPostId === post.id && a.memberId !== post.posterId)!;
+    store.setCurrentMember(fellow.memberId);
+    expect(store.applicantsFor(post.id)).toEqual([]);
+  });
+
+  test('an admin is not a third party to applicants either', () => {
+    const st = store.getState();
+    const post = st.posts[0];
+    asMember((m) => m.isAdmin);
+    expect(store.applicantsFor(post.id)).toEqual([]);
+  });
+
+  test('applyDisclosureFields names exactly the fields the poster will see', () => {
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    // The exact array, not substrings: the consent line has to be able to
+    // quote this, and a silently-added fifth field would be a promise broken
+    // without anything failing.
+    expect(store.applyDisclosureFields()).toEqual([
+      'your name',
+      'your batch and programme',
+      'your LinkedIn URL',
+      'the status you set',
+      'when you applied',
+    ]);
   });
 });
 
-describe('rule 3 — referrer capacity', () => {
-  test('a paused referrer refuses a new request', () => {
-    const referrer = store.getState().members.find((m) => m.openToReferring)!;
-    store.setCurrentMember(referrer.id);
-    store.setCaps({ ...referrer.caps, paused: true });
-    const seeker = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(seeker.id);
-    expect(() =>
-      store.sendRequest({ referrerId: referrer.id, companyId: referrer.companyId!, roleTitle: 'X', pitch: 'p', roleUrl: null, jobPostId: null }),
-    ).toThrow(RuleViolation);
+describe('rule 3 — you edit only your own rows', () => {
+  test('a member cannot set the status of an application that is not theirs', () => {
+    const st = store.getState();
+    const someoneElses = st.applications.find((a) => a.memberId !== st.currentMemberId)!;
+    // A named verified non-admin who is NOT the owner, chosen from `members`
+    // rather than derived from `applications`: deriving the actor from the same
+    // array the target came from can resolve back to the owner and make the
+    // assertion vacuous.
+    const actor = st.members.find(
+      (m) => m.status === 'verified' && !m.isAdmin && m.id !== someoneElses.memberId,
+    )!;
+    expect(actor.id).not.toBe(someoneElses.memberId);
+    store.setCurrentMember(actor.id);
+
+    // The code proves it was refused for ownership, not for being unverified.
+    expect(violationCode(() => store.setApplicationStatus(someoneElses.id, 'offer', NOW))).toBe('not_yours');
+    expect(store.getState().applications.find((a) => a.id === someoneElses.id)!.status).toBe(someoneElses.status);
+  });
+
+  test('a member cannot set the status of a post they do not own', () => {
+    const st = store.getState();
+    const post = st.posts[0];
+    const other = st.members.find((m) => m.status === 'verified' && m.id !== post.posterId)!;
+    store.setCurrentMember(other.id);
+    expect(violationCode(() => store.setPostStatus(post.id, 'filled', NOW))).toBe('not_yours');
+  });
+
+  test('a member cannot report their own post', () => {
+    const post = store.getState().posts[0];
+    store.setCurrentMember(post.posterId);
+    expect(violationCode(() => store.reportPost(post.id, 'spam', NOW))).toBe('self_report');
+  });
+
+  test('setting a status stamps statusUpdatedAt so staleness resets', () => {
+    const st = store.getState();
+    const mine = st.applications.find((a) => a.memberId === st.currentMemberId)!;
+    const before = mine.statusUpdatedAt;
+    store.setApplicationStatus(mine.id, 'in_review', NOW);
+    const after = store.getState().applications.find((a) => a.id === mine.id)!;
+    expect(after.statusUpdatedAt).toBeGreaterThan(before);
+    expect(after.statusUpdatedAt).toBe(NOW);
+    expect(after.status).toBe('in_review');
   });
 });
 
-describe('rule 4 — state transitions', () => {
-  test('a referrer cannot submit a request they never accepted', () => {
-    const sent = store.getState().requests.find((r) => r.state === 'sent')!;
-    store.setCurrentMember(sent.referrerId);
-    expect(() => store.advanceRequest(sent.id, 'submitted')).toThrow(RuleViolation);
+describe('applying', () => {
+  test('applying twice to one post is refused', () => {
+    const me = asMember((m) => m.status === 'verified' && !m.isAdmin);
+    const post = store.listPosts(NOW).find((p) => p.posterId !== me.id && !store.applicationFor(p.id))!;
+    store.applyToPost(post.id, NOW);
+    expect(violationCode(() => store.applyToPost(post.id, NOW))).toBe('already_applied');
   });
 
-  test('a seeker cannot accept on the referrer’s behalf', () => {
-    const sent = store.getState().requests.find((r) => r.state === 'sent')!;
-    store.setCurrentMember(sent.seekerId);
-    expect(() => store.advanceRequest(sent.id, 'accepted')).toThrow(RuleViolation);
+  test('you cannot apply to your own post', () => {
+    const post = store.getState().posts[0];
+    store.setCurrentMember(post.posterId);
+    // `self_apply`, not `already_applied` — the poster has no application on
+    // this post, so a duplicate guard would not have caught it.
+    expect(violationCode(() => store.applyToPost(post.id, NOW))).toBe('self_apply');
+    expect(store.applicantsFor(post.id).some((a) => a.memberId === post.posterId)).toBe(false);
   });
 
-  test('every advance appends an event', () => {
-    const sent = store.getState().requests.find((r) => r.state === 'sent')!;
-    const before = store.requestEventsFor(sent.id).length;
-    store.setCurrentMember(sent.referrerId);
-    store.advanceRequest(sent.id, 'accepted');
-    expect(store.requestEventsFor(sent.id).length).toBe(before + 1);
+  test('applying notifies the poster, and nobody else', () => {
+    const me = asMember((m) => m.status === 'verified' && !m.isAdmin);
+    const post = store.listPosts(NOW).find((p) => p.posterId !== me.id && !store.applicationFor(p.id))!;
+    store.applyToPost(post.id, NOW);
+    const ns = store.getState().notifications.filter((n) => n.kind === 'applied_to_your_post');
+    expect(ns.some((n) => n.memberId === post.posterId)).toBe(true);
+    expect(ns.every((n) => n.memberId !== me.id)).toBe(true);
+  });
+
+  test('marking a post filled notifies everyone who applied', () => {
+    const st = store.getState();
+    const counts = new Map<string, number>();
+    for (const a of st.applications) counts.set(a.jobPostId, (counts.get(a.jobPostId) ?? 0) + 1);
+    const postId = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const post = st.posts.find((p) => p.id === postId)!;
+    const applicants = st.applications.filter((a) => a.jobPostId === postId).map((a) => a.memberId);
+    store.setCurrentMember(post.posterId);
+    store.setPostStatus(postId, 'filled', NOW);
+    const filled = store.getState().notifications.filter((n) => n.kind === 'post_filled');
+    for (const m of applicants) expect(filled.some((n) => n.memberId === m), m).toBe(true);
+  });
+});
+
+describe('verification', () => {
+  test('an astra address verifies instantly, without an admin', () => {
+    const m = store.submitVerification({
+      googleSub: 'g_new', email: 'new.person@astra.xlri.ac.in', name: 'New Person',
+      batch: 2025, programme: 'BM', linkedinUrl: 'https://linkedin.com/in/new', knownBy: null,
+    }, NOW);
+    expect(m.status).toBe('verified');
+    expect(m.verifiedBy).toBe('domain');
+  });
+
+  test('any other address lands pending', () => {
+    const m = store.submitVerification({
+      googleSub: 'g_g', email: 'someone@gmail.com', name: 'Someone',
+      batch: 2019, programme: 'HRM', linkedinUrl: 'https://linkedin.com/in/someone', knownBy: 'Rohit Mehta',
+    }, NOW);
+    expect(m.status).toBe('pending');
+    expect(m.verifiedBy).toBeNull();
+  });
+
+  test('a multi-@ address cannot smuggle the allowlisted domain', () => {
+    const m = store.submitVerification({
+      googleSub: 'g_x', email: 'attacker@astra.xlri.ac.in@evil.com', name: 'Attacker',
+      batch: 2020, programme: 'BM', linkedinUrl: 'https://linkedin.com/in/x', knownBy: null,
+    }, NOW);
+    expect(m.status).toBe('pending');
+  });
+
+  test('an address with no local part does not get instant membership', () => {
+    // The domain is allowlisted, but nobody can own `@astra.xlri.ac.in` — it
+    // cannot be delivered to. It must wait for a reviewer like any other
+    // unproven address.
+    const m = store.submitVerification({
+      googleSub: 'g_empty', email: '@astra.xlri.ac.in', name: 'No Local Part',
+      batch: 2020, programme: 'BM', linkedinUrl: 'https://linkedin.com/in/empty', knownBy: null,
+    }, NOW);
+    expect(m.status).toBe('pending');
+    expect(m.verifiedBy).toBeNull();
+  });
+
+  test('approving records the reviewer, the time and the note, and notifies', () => {
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+    const admin = asMember((m) => m.isAdmin);
+    const out = store.decideVerification(pending.id, 'verified', 'LinkedIn matches batch records.', NOW);
+    expect(out.status).toBe('verified');
+    expect(out.verifiedBy).toBe('admin');
+    expect(out.decidedById).toBe(admin.id);
+    expect(out.decidedAt).toBe(NOW);
+    expect(out.decisionNote).toBe('LinkedIn matches batch records.');
+    expect(store.getState().notifications.some(
+      (n) => n.memberId === pending.id && n.kind === 'you_were_verified')).toBe(true);
+  });
+
+  test('a blank name is refused', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_blank_name', email: 'blank.name@astra.xlri.ac.in', name: '',
+      batch: 2020, programme: 'BM', linkedinUrl: 'https://linkedin.com/in/x', knownBy: null,
+    }, NOW))).toBe('missing_name');
+  });
+
+  test('a whitespace-only name is refused — trim before checking', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_ws_name', email: 'ws.name@astra.xlri.ac.in', name: '   ',
+      batch: 2020, programme: 'BM', linkedinUrl: 'https://linkedin.com/in/x', knownBy: null,
+    }, NOW))).toBe('missing_name');
+  });
+
+  test('a blank LinkedIn URL is refused', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_blank_li', email: 'blank.li@astra.xlri.ac.in', name: 'Someone',
+      batch: 2020, programme: 'BM', linkedinUrl: '', knownBy: null,
+    }, NOW))).toBe('missing_linkedin');
+  });
+
+  test('a whitespace-only LinkedIn URL is refused — trim before checking', () => {
+    expect(violationCode(() => store.submitVerification({
+      googleSub: 'g_ws_li', email: 'ws.li@astra.xlri.ac.in', name: 'Someone',
+      batch: 2020, programme: 'BM', linkedinUrl: '   ', knownBy: null,
+    }, NOW))).toBe('missing_linkedin');
+  });
+
+  test('neither refusal leaves a member row behind', () => {
+    const before = store.getState().members.length;
+    expect(() => store.submitVerification({
+      googleSub: 'g_refused', email: 'refused@astra.xlri.ac.in', name: '',
+      batch: 2020, programme: 'BM', linkedinUrl: '', knownBy: null,
+    }, NOW)).toThrow(RuleViolation);
+    expect(store.getState().members.length).toBe(before);
+  });
+
+  test('a non-admin cannot decide a case', () => {
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    expect(violationCode(() => store.decideVerification(pending.id, 'verified', 'x', NOW))).toBe('not_admin');
+  });
+
+  test('the decided list carries only cases a reviewer actually ruled on', () => {
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+    const admin = asMember((m) => m.isAdmin);
+    store.decideVerification(pending.id, 'rejected', 'No XLRI entry on LinkedIn.', NOW);
+
+    const decided = store.decidedCases();
+    // A domain-verified member (e.g. the current admin, or Ananya) was never
+    // ruled on by anyone, so it stays off this list despite status: 'verified'.
+    // Checked by id against the full roster, not a `verifiedBy` field on the
+    // row itself — `decidedCases()` returns a narrowed `DecidedCase`
+    // projection (Fix 5) that deliberately does not carry `verifiedBy`.
+    const domainVerifiedIds = new Set(
+      store.getState().members.filter((m) => m.verifiedBy === 'domain').map((m) => m.id),
+    );
+    expect(decided.some((c) => domainVerifiedIds.has(c.id))).toBe(false);
+    const row = decided.find((m) => m.id === pending.id)!;
+    expect(row.status).toBe('rejected');
+    expect(row.decidedById).toBe(admin.id);
+    expect(row.decisionNote).toBe('No XLRI entry on LinkedIn.');
+  });
+
+  test('decidedCases returns a narrowed projection, not full member rows', () => {
+    // Fix 5: `decidedCases()` used to return `Member[]` — email and
+    // googleSub included — to a UI component that renders neither. `toEqual`
+    // against the exact expected shape catches a regression back to the full
+    // row, not just a missing field: an object with extra keys fails it too.
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+    const admin = asMember((m) => m.isAdmin);
+    store.decideVerification(pending.id, 'rejected', 'No XLRI entry on LinkedIn.', NOW);
+
+    const row = store.decidedCases().find((c) => c.id === pending.id)!;
+    expect(row).toEqual({
+      id: pending.id,
+      name: pending.name,
+      status: 'rejected',
+      decidedById: admin.id,
+      decidedByName: admin.name,
+      decidedAt: NOW,
+      decisionNote: 'No XLRI entry on LinkedIn.',
+    });
+  });
+
+  test('the decided list is admin-only, even for a verified member', () => {
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    expect(store.decidedCases()).toEqual([]);
+  });
+});
+
+describe('pendingCases field scoping (Fix wave 3, item 1)', () => {
+  // `pendingCases()` used to return `Member[]` — email and googleSub
+  // included — to `Admin.tsx`'s `QueueRow`, which renders neither. `toEqual`
+  // against the exact expected shape catches a regression back to the full
+  // row, not just a missing field: an object with extra keys fails it too.
+  test('pendingCases returns a narrowed projection, not full member rows', () => {
+    asMember((m) => m.isAdmin);
+    const pending = store.getState().members.find((m) => m.status === 'pending')!;
+
+    const row = store.pendingCases().find((c) => c.id === pending.id)!;
+    expect(row).toEqual({
+      id: pending.id,
+      name: pending.name,
+      batch: pending.batch,
+      programme: pending.programme,
+      knownBy: pending.knownBy,
+      linkedinUrl: pending.linkedinUrl,
+      requestedAt: pending.requestedAt,
+    });
   });
 });
 
 describe('publishing', () => {
-  test('a post without a relationship is refused — the one field a parser cannot fill (D13)', () => {
-    const meera = store.getState().members.find((m) => m.name.startsWith('Meera'))!;
-    store.setCurrentMember(meera.id);
-    expect(() =>
-      store.publishPost({
-        rawText: 'Head of Ops at Acme. Mail careers@acme.com', title: 'Head of Ops', companyId: null,
-        confidentialDescriptor: 'a logistics firm', locations: ['Pune'], expMin: 5, expMax: 8,
-        compText: null, function: null, applyMethod: 'email', applyValue: 'careers@acme.com', jdUrl: null,
-        posterRelationship: null as never, destinationType: 'company_ats', hiringContactName: null,
-        hiringContactValue: null, contactConsentConfirmed: true, parseConfidence: 0.8,
-      }),
-    ).toThrow(RuleViolation);
+  const draft = {
+    title: 'Ops Lead', companyName: 'Acme', isConfidential: false, confidentialDescriptor: null,
+    function: 'Operations & Supply Chain', location: 'Pune', isRemote: false,
+    expMin: 5, expMax: 8, compText: null, applyMethod: 'email', applyValue: 'careers@acme.com',
+    jdUrl: null, note: null, connection: 'works_here', contactName: null, rawPaste: null,
+  } as const;
+
+  test('a post without a connection is refused — it is the honesty field', () => {
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    expect(violationCode(() => store.publishPost({ ...draft, connection: null as never }, NOW)))
+      .toBe('missing_connection');
   });
 
-  test('a named contact requires the consent tick (D13)', () => {
-    const partho = store.getState().members.find((m) => m.name.startsWith('Partho'))!;
-    store.setCurrentMember(partho.id);
-    expect(() =>
-      store.publishPost({
-        rawText: 'x', title: 'Strategy', companyId: null, confidentialDescriptor: 'an insurer',
-        locations: ['Mumbai'], expMin: 2, expMax: 5, compText: null, function: null,
-        applyMethod: 'phone', applyValue: '8800029599', jdUrl: null,
-        posterRelationship: 'knows_contact', destinationType: 'named_person',
-        hiringContactName: 'Nikita', hiringContactValue: '8800029599',
-        contactConsentConfirmed: false, parseConfidence: 0.8,
-      }),
-    ).toThrow(RuleViolation);
+  test('a confidential post needs a descriptor', () => {
+    asMember((m) => m.status === 'verified' && !m.isAdmin);
+    expect(violationCode(() => store.publishPost(
+      { ...draft, companyName: null, isConfidential: true, confidentialDescriptor: '', connection: 'forwarded' },
+      NOW,
+    ))).toBe('missing_descriptor');
   });
 
-  test('a duplicate post merges into the existing card rather than creating a second', () => {
-    const existing = store.getState().posts[4];
-    const partho = store.getState().members.find((m) => m.name.startsWith('Partho'))!;
-    store.setCurrentMember(partho.id);
-    const before = store.getState().posts.length;
-    const merged = store.publishPost({
-      rawText: 'same role, different forward', title: existing.title, companyId: existing.companyId,
-      confidentialDescriptor: null, locations: existing.locations, expMin: null, expMax: null,
-      compText: null, function: null, applyMethod: existing.applyMethod, applyValue: existing.applyValue,
-      jdUrl: null, posterRelationship: 'forwarded', destinationType: existing.destinationType,
-      hiringContactName: null, hiringContactValue: null, contactConsentConfirmed: true, parseConfidence: 0.7,
-    });
-    expect(merged.id).toBe(existing.id);
-    expect(store.getState().posts.length).toBe(before);
+  test('any verified member can post — no pre-approval (L3)', () => {
+    const me = asMember((m) => m.status === 'verified' && !m.isAdmin);
+    const p = store.publishPost({ ...draft }, NOW);
+    expect(p.postStatus).toBe('open');
+    expect(p.posterId).toBe(me.id);
+    expect(p.postedAt).toBe(NOW);
+    expect(store.myPosts().some((x) => x.id === p.id)).toBe(true);
   });
 });
 
-describe('the tracker (spec §10)', () => {
-  test('rows the viewer owes are marked "you" and sort first', () => {
-    const seeker = store.getState().requests.find((r) => r.stateOwner === 'seeker')!;
-    store.setCurrentMember(seeker.seekerId);
-    const rows = store.trackerFor(seeker.seekerId, NOW);
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows[0].owed).toBe('you');
-  });
-
-  test('every row owed by the viewer carries exactly one CTA (§5.2)', () => {
-    const member = store.getState().requests[0].seekerId;
-    store.setCurrentMember(member);
-    for (const row of store.trackerFor(member, NOW)) {
-      if (row.owed === 'you') expect(row.cta).not.toBeNull();
-      else expect(row.cta).toBeNull();
-    }
-  });
-
-  test('the tracker never leaks a request the viewer is not party to', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    const ids = store.trackerFor(ananya.id, NOW).filter((r) => r.kind === 'request').map((r) => r.id);
-    for (const id of ids) {
-      const req = store.getState().requests.find((r) => r.id === id)!;
-      expect(req.seekerId === ananya.id || req.referrerId === ananya.id).toBe(true);
-    }
-  });
-
-  test('lastNudgedAt is the real, clock-maintained field — null until an actual nudge fires (Fix 7)', () => {
-    const DAY_MS = 24 * 60 * 60 * 1000;
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    const company = store.listCompanies()[0];
-    const referrer = store.alumniAt(company.id).find((m) => m.id !== ananya.id && m.openToReferring)!;
-    const request = store.sendRequest({
-      referrerId: referrer.id, companyId: company.id, roleTitle: 'Nudge Honesty Test',
-      pitch: 'hi', roleUrl: null, jobPostId: null,
-    });
-
-    const beforeRow = store.trackerFor(ananya.id, request.updatedAt)
-      .find((r) => r.id === request.id)!;
-    expect(beforeRow.lastNudgedAt).toBeNull();
-
-    // Past the "sent" state's first nudge threshold (3 days), short of the
-    // 7-day auto-expiry — the clock should send exactly one nudge here.
-    const laterNow = request.updatedAt + 5 * DAY_MS;
-    store.runClock(laterNow);
-
-    const stored = store.getState().requests.find((r) => r.id === request.id)!;
-    expect(stored.lastNudgedAt).not.toBeNull();
-
-    const afterRow = store.trackerFor(ananya.id, laterNow).find((r) => r.id === request.id)!;
-    expect(afterRow.lastNudgedAt).toBe(stored.lastNudgedAt);
-  });
-});
-
-describe('the clock', () => {
-  test('runClock expires a request the referrer never answered', () => {
-    const sent = store.getState().requests.find((r) => r.state === 'sent')!;
-    store.runClock(sent.updatedAt + 8 * 86_400_000);
-    expect(store.getState().requests.find((r) => r.id === sent.id)!.state).toBe('expired');
-  });
-
-  test('runClock archives a post past day 45', () => {
+describe('moderation', () => {
+  test('deleting a post is admin-only — not even the poster may do it', () => {
     const post = store.getState().posts[0];
-    store.runClock(post.postedAt + 46 * 86_400_000);
-    expect(store.getState().posts.find((p) => p.id === post.id)!.archivedAt).not.toBeNull();
+    store.setCurrentMember(post.posterId);
+    expect(violationCode(() => store.deletePost(post.id, NOW))).toBe('not_admin');
+    expect(store.getState().posts.some((p) => p.id === post.id)).toBe(true);
+  });
+
+  test('an admin delete removes the post and resolves its open reports', () => {
+    const report = store.getState().reports.find((r) => r.resolvedAt === null)!;
+    const postId = report.jobPostId;
+    asMember((m) => m.isAdmin);
+    expect(store.listReports().some((r) => r.id === report.id)).toBe(true);
+
+    store.deletePost(postId, NOW);
+
+    const after = store.getState();
+    expect(after.posts.some((p) => p.id === postId)).toBe(false);
+    expect(after.reports.find((r) => r.id === report.id)!.resolvedAt).toBe(NOW);
+    // A resolved report leaves the queue.
+    expect(store.listReports().some((r) => r.id === report.id)).toBe(false);
+  });
+
+  test('reporting a post someone else owns lands in the admin queue', () => {
+    const st = store.getState();
+    const post = st.posts.find((p) => p.posterId !== st.currentMemberId)!;
+    const r = store.reportPost(post.id, 'Role was filled weeks ago.', NOW);
+    expect(r.reporterId).toBe(st.currentMemberId);
+    expect(r.resolvedAt).toBeNull();
+    asMember((m) => m.isAdmin);
+    expect(store.listReports().some((x) => x.id === r.id)).toBe(true);
+  });
+
+  test('reporting the same post twice is refused, the same way a second application is', () => {
+    const st = store.getState();
+    const post = st.posts.find((p) => p.posterId !== st.currentMemberId)!;
+    store.reportPost(post.id, 'Role was filled weeks ago.', NOW);
+    expect(violationCode(() => store.reportPost(post.id, 'Still bothers me.', NOW))).toBe('already_reported');
+    // Exactly one report from this member on this post, not two.
+    const mine = store.getState().reports.filter(
+      (r) => r.jobPostId === post.id && r.reporterId === st.currentMemberId,
+    );
+    expect(mine).toHaveLength(1);
   });
 });
 
-describe('the WhatsApp digest (D17)', () => {
-  test('it is one line per new post, each with a link', () => {
-    const admin = store.getState().members.find((m) => m.isAdmin)!;
-    store.setCurrentMember(admin.id);
-    const digest = store.whatsappDigest(NOW);
-    for (const line of digest.split('\n').filter(Boolean).slice(1)) {
-      expect(line).toContain('/post/');
-    }
+describe('the bell', () => {
+  test('marking read touches only the viewer’s own unread notifications', () => {
+    const before = store.getState().notifications;
+    const me = store.getState().currentMemberId;
+    const alreadyRead = before.find((n) => n.memberId === me && n.readAt !== null)!;
+    const othersBefore = before.filter((n) => n.memberId !== me);
+    expect(store.myNotifications().some((n) => n.readAt === null)).toBe(true);
+    expect(othersBefore.some((n) => n.readAt === null)).toBe(true);
+
+    store.markNotificationsRead(NOW);
+
+    const after = store.getState().notifications;
+    expect(after.filter((n) => n.memberId === me).every((n) => n.readAt !== null)).toBe(true);
+    // An already-read item keeps its original timestamp rather than being restamped.
+    expect(after.find((n) => n.id === alreadyRead.id)!.readAt).toBe(alreadyRead.readAt);
+    // Nobody else's bell is touched.
+    for (const n of othersBefore) expect(after.find((x) => x.id === n.id)!.readAt).toBe(n.readAt);
+  });
+
+  test('a pending member cannot clear a bell they cannot read', () => {
+    // The pending persona owns no notification in the seed, so the ownership
+    // filter in `markNotificationsRead` alone would satisfy this test without
+    // the D2 gate ever running. Give them one here, unread, so the only thing
+    // standing between it and `readAt !== null` is `viewerOrNull()` refusing
+    // a pending viewer. Verified by reverting the fix: swapping
+    // `viewerOrNull()` for an ungated lookup in `markNotificationsRead` turns
+    // this red (see fix-wave-1 report).
+    const pending = asMember((m) => m.status === 'pending');
+    const st = store.getState();
+    st.notifications = [
+      ...st.notifications,
+      {
+        id: 'n_pending_test', memberId: pending.id, kind: 'you_were_verified',
+        body: 'test', link: '/board', readAt: null, pushedAt: null, emailedAt: null, at: NOW,
+      },
+    ];
+
+    store.markNotificationsRead(NOW);
+
+    expect(store.getState().notifications.find((n) => n.id === 'n_pending_test')!.readAt).toBeNull();
   });
 });
 
-describe('field scoping — a row the viewer may see still withholds fields (D6)', () => {
-  test('a member read carries no blocked list, no googleSub, no caps and no third-party email', () => {
-    const karanRaw = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
+describe('push subscriptions', () => {
+  test('an endpoint is stored once per member, and a second endpoint is added', () => {
+    const me = asMember((m) => m.status === 'verified' && !m.isAdmin);
+    store.savePushSubscription('https://push.example/abc', '{"p256dh":"k1"}', NOW);
+    store.savePushSubscription('https://push.example/abc', '{"p256dh":"k1"}', NOW);
+    const subs = store.getState().pushSubscriptions;
+    expect(subs).toHaveLength(1);
+    expect(subs[0].memberId).toBe(me.id);
+    expect(subs[0].endpoint).toBe('https://push.example/abc');
+    store.savePushSubscription('https://push.example/def', '{"p256dh":"k2"}', NOW);
+    expect(store.getState().pushSubscriptions).toHaveLength(2);
+  });
 
-    const karan = store.listMembers().find((m) => m.id === karanRaw.id)!;
-    expect(karan).toBeDefined();
-    // Reading who a seeker hides from discloses that they are searching.
-    expect('privacy' in karan).toBe(false);
-    expect('googleSub' in karan).toBe(false);
-    expect('caps' in karan).toBe(false);
-    expect(karan.email).toBeNull();
-    expect(JSON.stringify(karan)).not.toContain(karanRaw.email);
-    expect(JSON.stringify(karan)).not.toContain(karanRaw.googleSub);
-
-    // The same holds for the single-member read and the referrer picker.
-    expect('privacy' in store.getMember(karanRaw.id)!).toBe(false);
-    for (const m of store.alumniAt('c_foodhak')) expect('privacy' in m).toBe(false);
-
-    // Your own record still gives you your own address — it is yours.
-    expect(store.getMember(ananya.id)!.email).toBe(ananya.email);
-    expect(store.getCurrentMember()!.privacy.confidentialSearch).toBe(true);
+  test('a pending member cannot register for push', () => {
+    asMember((m) => m.status === 'pending');
+    store.savePushSubscription('https://push.example/xyz', '{"p256dh":"k"}', NOW);
+    expect(store.getState().pushSubscriptions).toEqual([]);
   });
 });
 
-describe('the store’s own authority rules', () => {
-  test('a third party cannot move someone else’s request — not even an admin', () => {
-    const sent = store.getState().requests.find((r) => r.state === 'sent')!;
-
-    const admin = store.getState().members.find((m) => m.isAdmin)!;
-    store.setCurrentMember(admin.id);
-    // An admin may READ a request (§4.1) but never drive one.
-    expect(store.getRequest(sent.id)).not.toBeNull();
-    expect(() => store.advanceRequest(sent.id, 'accepted')).toThrow(RuleViolation);
-
-    const stranger = store.getState().members.find(
-      (m) => m.status === 'verified' && !m.isAdmin && m.id !== sent.seekerId && m.id !== sent.referrerId,
-    )!;
-    store.setCurrentMember(stranger.id);
-    expect(() => store.advanceRequest(sent.id, 'accepted')).toThrow(RuleViolation);
-
-    expect(store.getState().requests.find((r) => r.id === sent.id)!.state).toBe('sent');
-  });
-
-  test('the verification queue is admin-only, and is not sourced through member visibility', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    const admin = store.getState().members.find((m) => m.isAdmin)!;
-    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
-
-    store.setCurrentMember(ananya.id);
-    expect(store.listCases()).toEqual([]);
-
-    // Karan blocks the admin outright. His profile must refuse to render...
-    store.setCurrentMember(karan.id);
-    store.setPrivacy({ ...karan.privacy, blockedMemberIds: [admin.id] });
-    store.setCurrentMember(admin.id);
-    expect(store.getMember(karan.id)).toBeNull();
-
-    // ...and his case must still be reviewable: he submitted the evidence
-    // himself, so it carries its own consent.
-    const cases = store.listCases();
-    expect(cases.length).toBeGreaterThan(0);
-    expect(cases.some((c) => c.decision === 'pending')).toBe(true);
-    expect(cases.some((c) => c.memberId === karan.id)).toBe(true);
-  });
-
-  test('the tracker refuses to render anyone else’s — including for an admin', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    expect(store.trackerFor(ananya.id, NOW).length).toBeGreaterThan(0);
-
-    const admin = store.getState().members.find((m) => m.isAdmin)!;
-    store.setCurrentMember(admin.id);
-    expect(store.trackerFor(ananya.id, NOW)).toEqual([]);
-  });
-});
-
-describe('the clock, run repeatedly', () => {
-  test('a second tick at the same instant changes nothing and notifies nobody', () => {
-    const now = store.getState().posts[0].postedAt + 46 * 86_400_000;
-    store.runClock(now);
-    const snapshot = JSON.stringify(store.getState());
-
-    let notifications = 0;
-    const unsubscribe = store.subscribe(() => {
-      notifications += 1;
-    });
-    store.runClock(now);
-    unsubscribe();
-
-    expect(JSON.stringify(store.getState())).toBe(snapshot);
-    expect(notifications).toBe(0);
-  });
-
-  test('a nudge is at most one per day, and leaves a trace on the timeline', () => {
-    const req = store.getState().requests.find((r) => r.id === 'req_d_submitted_overdue')!;
-    const nudgesOf = (id: string) => store.getState().requests.find((r) => r.id === id)!.nudgeCount;
-    const eventsOf = (id: string) => store.getState().requestEvents.filter((e) => e.requestId === id).length;
-    const before = eventsOf(req.id);
-
-    // 46 days into `submitted`, this request is past ALL THREE of its schedule
-    // thresholds (14/30/45). Without the daily guard it catches the whole
-    // sequence up in three successive minute-ticks instead of over a month.
-    const now = req.updatedAt + 46 * 86_400_000;
-
-    store.runClock(now);
-    expect(nudgesOf(req.id)).toBe(1);
-    // The nudge is on the timeline, so the eventual auto-advance is not a
-    // history jumping from `submitted` straight to `no_response`.
-    expect(eventsOf(req.id)).toBe(before + 1);
-
-    store.runClock(now + 60_000);
-    store.runClock(now + 120_000);
-    expect(nudgesOf(req.id)).toBe(1);
-    expect(eventsOf(req.id)).toBe(before + 1);
-
-    // A day later the next one lands, and the request has not been advanced
-    // out from under its owner in the meantime.
-    store.runClock(now + 86_400_000);
-    expect(nudgesOf(req.id)).toBe(2);
-    expect(store.getState().requests.find((r) => r.id === req.id)!.state).toBe('submitted');
-  });
-});
-
-describe('the appeal path (§6)', () => {
-  test('a rejected member can appeal despite failing canSeeNetwork', () => {
-    const rejected = store.getState().members.find((m) => m.status === 'rejected')!;
-    store.setCurrentMember(rejected.id);
-    // The normal viewer gate refuses this member everything else in the store.
-    expect(store.listPosts(NOW)).toEqual([]);
-
-    const appeal = store.submitAppeal({
-      linkedinUrl: rejected.linkedinUrl ?? '',
-      batch: rejected.batch,
-      programme: rejected.programme,
-      nameAtGraduation: rejected.name,
-    });
-
-    expect(appeal.isAppeal).toBe(true);
-    expect(appeal.decision).toBe('pending');
-    expect(store.getState().members.find((m) => m.id === rejected.id)!.status).toBe('pending');
-  });
-
-  test('the one appeal §6 allows cannot be brought twice', () => {
-    const rejected = store.getState().members.find((m) => m.status === 'rejected')!;
-    store.setCurrentMember(rejected.id);
-    const evidence = {
-      linkedinUrl: rejected.linkedinUrl ?? '',
-      batch: rejected.batch,
-      programme: rejected.programme,
-      nameAtGraduation: rejected.name,
+describe('persistence', () => {
+  // Vitest has no DOM, so `storage()` returns null and persistence is off by
+  // default. These two cases install a stub for the duration, which is the
+  // only way to exercise the load path the browser actually takes.
+  const withStorage = (fn: (mem: Map<string, string>) => void) => {
+    const mem = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => { mem.set(k, String(v)); },
+      removeItem: (k: string) => { mem.delete(k); },
+      clear: () => mem.clear(),
     };
-    store.submitAppeal(evidence);
-    // The member's own latest case is now the appeal itself — still pending,
-    // not rejected — so a second call has nothing eligible to appeal.
-    expect(() => store.submitAppeal(evidence)).toThrow(RuleViolation);
-  });
-});
+    try {
+      fn(mem);
+    } finally {
+      delete (globalThis as any).localStorage;
+    }
+  };
 
-describe('publishing — what is not a merge target', () => {
-  test('a filled post is not merged into; the next forward starts a fresh card', () => {
-    const existing = store.getState().posts[4];
-    store.setCurrentMember(existing.posterId);
-    store.confirmPost(existing.id, 'filled');
+  const KEY = 'loop.lite.v1';
 
-    const partho = store.getState().members.find((m) => m.name.startsWith('Partho'))!;
-    store.setCurrentMember(partho.id);
-    const before = store.getState().posts.length;
-    const fresh = store.publishPost({
-      rawText: 'reposted after it was filled', title: existing.title, companyId: existing.companyId,
-      confidentialDescriptor: null, locations: existing.locations, expMin: null, expMax: null,
-      compText: null, function: null, applyMethod: existing.applyMethod, applyValue: existing.applyValue,
-      jdUrl: null, posterRelationship: 'forwarded', destinationType: existing.destinationType,
-      hiringContactName: null, hiringContactValue: null, contactConsentConfirmed: true, parseConfidence: 0.7,
+  test('a stored workspace at the current version is loaded, not reseeded', () => {
+    withStorage((mem) => {
+      mem.set(KEY, JSON.stringify({ ...buildSeed(NOW), currentMemberId: 'm_meera' }));
+      expect(store.load({ now: NOW }).currentMemberId).toBe('m_meera');
     });
-
-    expect(fresh.id).not.toBe(existing.id);
-    expect(store.getState().posts.length).toBe(before + 1);
-    expect(store.getState().shares.some((s) => s.jobPostId === existing.id && s.sharerId === partho.id)).toBe(false);
   });
-});
 
-describe('the profile (Task 24, §7.4)', () => {
-  test('setProfile edits only the viewer’s own record', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
-    store.setCurrentMember(ananya.id);
+  test('a schema-version mismatch reseeds rather than half-migrating', () => {
+    withStorage((mem) => {
+      const stale = { ...buildSeed(NOW), version: SCHEMA_VERSION + 1, currentMemberId: 'm_meera', posts: [] };
+      mem.set(KEY, JSON.stringify(stale));
 
-    const updated = store.setProfile({
-      name: ananya.name,
-      batch: ananya.batch,
-      programme: ananya.programme,
-      companyId: ananya.companyId,
-      title: 'New Title',
-      function: 'Strategy',
-      location: 'Remote',
-      linkedinUrl: 'https://linkedin.com/in/example',
-      openToReferring: !ananya.openToReferring,
+      const loaded = store.load({ now: NOW });
+
+      expect(loaded.version).toBe(SCHEMA_VERSION);
+      expect(loaded.currentMemberId).toBe('m_ananya');
+      expect(loaded.posts.length).toBeGreaterThan(0);
+      // The fresh seed is written back, so the stale payload is gone for good.
+      expect(JSON.parse(mem.get(KEY)!).version).toBe(SCHEMA_VERSION);
     });
-
-    expect(updated.title).toBe('New Title');
-    expect(store.getState().members.find((m) => m.id === karan.id)!.title).toBe(karan.title);
   });
 
-  test('setProfile refuses an empty name', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    expect(() =>
-      store.setProfile({
-        name: '   ',
-        batch: ananya.batch,
-        programme: ananya.programme,
-        companyId: ananya.companyId,
-        title: null,
-        function: null,
-        location: null,
-        linkedinUrl: null,
-        openToReferring: false,
-      }),
-    ).toThrow(RuleViolation);
-  });
-
-  test('uploadResume stores a filename only and points the member at it; myResume is viewer-scoped', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    const karan = store.getState().members.find((m) => m.name.startsWith('Karan'))!;
-
-    store.setCurrentMember(karan.id);
-    expect(store.myResume()).toBeNull();
-
-    const resume = store.uploadResume('Karan_Shah_Resume.pdf');
-    expect(resume.filename).toBe('Karan_Shah_Resume.pdf');
-    expect(store.myResume()?.id).toBe(resume.id);
-    expect(store.getState().members.find((m) => m.id === karan.id)!.resumeVersionId).toBe(resume.id);
-
-    // Someone else's resume pointer is untouched, and `myResume` never
-    // answers for anyone but the current viewer.
-    store.setCurrentMember(ananya.id);
-    expect(store.myResume()?.filename).not.toBe('Karan_Shah_Resume.pdf');
-  });
-});
-
-describe('member-facing reports (§7.1 Must / §8)', () => {
-  test('a member cannot report their own post', () => {
-    const post = store.getState().posts[0];
-    store.setCurrentMember(post.posterId);
-    expect(() => store.reportTarget('post', post.id, 'looks wrong')).toThrow(RuleViolation);
-  });
-
-  test('a member cannot report themselves', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    expect(() => store.reportTarget('member', ananya.id, 'testing')).toThrow(RuleViolation);
-  });
-
-  test('reporting someone else’s post hides it from the board pending review, but not from an admin', () => {
-    const post = store.getState().posts.find((p) => p.archivedAt === null)!;
-    const reporter = store.getState().members.find(
-      (m) => m.status === 'verified' && m.id !== post.posterId,
-    )!;
-    store.setCurrentMember(reporter.id);
-    store.reportTarget('post', post.id, 'This looks like a scam.');
-
-    expect(store.getPost(post.id)).toBeNull();
-    expect(store.listPosts(NOW).some((p) => p.id === post.id)).toBe(false);
-
-    const admin = store.getState().members.find((m) => m.isAdmin)!;
-    store.setCurrentMember(admin.id);
-    expect(store.getPost(post.id)?.id).toBe(post.id);
-    expect(store.listReports().some((r) => r.targetId === post.id)).toBe(true);
-  });
-});
-
-describe('post visibility is one rule — postsVisibleTo (Fix 1)', () => {
-  test('a post with an open report drops out of posterStatsFor’s counts and the poster’s own tracker', () => {
-    const post = store.getState().posts.find((p) => p.id === 'p_anveshan')!;
-    const reporter = store.getState().members.find(
-      (m) => m.status === 'verified' && m.id !== post.posterId,
-    )!;
-    store.setCurrentMember(reporter.id);
-    store.reportTarget('post', post.id, 'This looks off.');
-
-    store.setCurrentMember(post.posterId);
-    expect(store.posterStatsFor(post.id)).toEqual({
-      views: 0,
-      applied: 0,
-      heardBack: 0,
-      interviewing: 0,
-      outcomesUnknown: true,
+  test('unreadable storage falls back to a fresh seed rather than throwing', () => {
+    withStorage((mem) => {
+      mem.set(KEY, 'not json at all');
+      expect(store.load({ now: NOW }).members.length).toBeGreaterThan(0);
     });
-    expect(store.trackerFor(post.posterId, NOW).some((r) => r.id === post.id)).toBe(false);
-  });
-
-  test('confirmPost on a reported post fails closed rather than succeeding', () => {
-    const post = store.getState().posts.find((p) => p.id === 'p_anveshan')!;
-    const reporter = store.getState().members.find(
-      (m) => m.status === 'verified' && m.id !== post.posterId,
-    )!;
-    store.setCurrentMember(reporter.id);
-    store.reportTarget('post', post.id, 'This looks off.');
-
-    store.setCurrentMember(post.posterId);
-    expect(() => store.confirmPost(post.id, 'open')).toThrow(RuleViolation);
   });
 });
 
-describe('setProfile validates the batch year at the store boundary (Fix 3)', () => {
-  test('an empty/zero batch is refused and leaves the member’s own batch unchanged', () => {
-    const ananya = store.getState().members.find((m) => m.name.startsWith('Ananya'))!;
-    store.setCurrentMember(ananya.id);
-    expect(() =>
-      store.setProfile({
-        name: ananya.name,
-        // `Number('')` — exactly what a cleared `<input type="number">` yields.
-        batch: Number(''),
-        programme: ananya.programme,
-        companyId: ananya.companyId,
-        title: null,
-        function: null,
-        location: null,
-        linkedinUrl: null,
-        openToReferring: ananya.openToReferring,
-      }),
-    ).toThrow(RuleViolation);
-    expect(store.getState().members.find((m) => m.id === ananya.id)!.batch).toBe(ananya.batch);
+/**
+ * Signing out exists for one reason: without it `currentMemberId` always names
+ * a seeded row, the gate's `!member` branch never runs, and `Login` — screen 1
+ * of eight — is implemented and rendered by the smoke script yet unreachable by
+ * any navigation. Task 14's walkthrough caught that against the spec's "all
+ * eight screens are reachable" criterion.
+ *
+ * The second test is the one that matters. An empty session is an UNVERIFIED
+ * viewer, so D2 applies to it exactly as it applies to a pending member: it
+ * must read nothing. A sign-out that left the board readable would be a worse
+ * bug than the unreachable screen it was added to fix.
+ */
+describe('signing out', () => {
+  test('empties the session, which is what makes Login reachable', () => {
+    expect(store.getCurrentMember()).not.toBeNull();
+
+    store.signOut();
+
+    expect(store.getCurrentMember()).toBeNull();
+    expect(store.pendingNewSignIn()).toBeNull();
   });
-});
 
-describe('a suspended member’s posts come down too (Fix 5)', () => {
-  test('hidden from a non-admin, still visible to an admin', () => {
-    const post = store.getState().posts.find((p) => p.archivedAt === null)!;
-    const poster = store.getState().members.find((m) => m.id === post.posterId)!;
-    const reporter = store.getState().members.find(
-      (m) => m.status === 'verified' && m.id !== poster.id && !m.isAdmin,
-    )!;
-    const admin = store.getState().members.find((m) => m.isAdmin && m.id !== poster.id)!;
+  test('a signed-out viewer reads nothing — D2 holds with no session at all', () => {
+    const postId = store.getState().posts[0]!.id;
 
-    store.setCurrentMember(reporter.id);
-    const report = store.reportTarget('member', poster.id, 'Spamming the board.');
+    store.signOut();
 
-    store.setCurrentMember(admin.id);
-    store.upholdReport(report.id);
-    expect(store.getState().members.find((m) => m.id === poster.id)!.status).toBe('suspended');
-
-    store.setCurrentMember(reporter.id);
-    expect(store.getPost(post.id)).toBeNull();
-    expect(store.listPosts(NOW).some((p) => p.id === post.id)).toBe(false);
-
-    store.setCurrentMember(admin.id);
-    expect(store.getPost(post.id)?.id).toBe(post.id);
+    expect(store.listPosts(NOW)).toEqual([]);
+    expect(store.myApplications(NOW)).toEqual([]);
+    expect(store.myPosts()).toEqual([]);
+    expect(store.myNotifications()).toEqual([]);
+    expect(store.applicantsFor(postId)).toEqual([]);
+    expect(store.pendingCases()).toEqual([]);
+    expect(store.decidedCases()).toEqual([]);
+    expect(store.listReports()).toEqual([]);
+    expect(store.applyDisclosureFields()).toEqual([]);
   });
-});
 
-describe('recordPostView (Fix 8)', () => {
-  test('increments for a non-poster viewer and is a no-op for the poster', () => {
-    const post = store.getState().posts.find((p) => p.archivedAt === null)!;
-    const before = post.viewCount;
+  test('signing out abandons a half-finished second sign-in rather than keeping it', () => {
+    store.beginNewSignIn({ googleSub: 'g_half', email: 'half.done@astra.xlri.ac.in' });
+    expect(store.pendingNewSignIn()).not.toBeNull();
 
-    store.setCurrentMember(post.posterId);
-    store.recordPostView(post.id);
-    expect(store.getState().posts.find((p) => p.id === post.id)!.viewCount).toBe(before);
+    store.signOut();
 
-    const viewer = store.getState().members.find(
-      (m) => m.status === 'verified' && m.id !== post.posterId,
-    )!;
-    store.setCurrentMember(viewer.id);
-    store.recordPostView(post.id);
-    expect(store.getState().posts.find((p) => p.id === post.id)!.viewCount).toBe(before + 1);
-  });
-});
-
-describe('requestContactRemoval is not gated to the poster or an admin (Fix 9)', () => {
-  test('any verified, non-poster, non-admin member may request it on the contact’s behalf', () => {
-    const post = store.getState().posts.find((p) => p.hiringContactValue !== null && p.archivedAt === null)!;
-    const outsider = store.getState().members.find(
-      (m) => m.status === 'verified' && !m.isAdmin && m.id !== post.posterId,
-    )!;
-    store.setCurrentMember(outsider.id);
-    expect(() => store.requestContactRemoval(post.id)).not.toThrow();
-
-    const updated = store.getState().posts.find((p) => p.id === post.id)!;
-    expect(updated.hiringContactValue).toBeNull();
-    expect(updated.contactRemovalRequestedAt).not.toBeNull();
-  });
-});
-
-describe('referralAvailabilityFor refuses a suspended target (Fix 10)', () => {
-  test('a suspended member reads as not accepting, even though openToReferring/caps are untouched', () => {
-    const referrer = store.getState().members.find((m) => m.openToReferring && m.status === 'verified')!;
-    const reporter = store.getState().members.find(
-      (m) => m.status === 'verified' && !m.isAdmin && m.id !== referrer.id,
-    )!;
-    const admin = store.getState().members.find((m) => m.isAdmin)!;
-
-    store.setCurrentMember(reporter.id);
-    const report = store.reportTarget('member', referrer.id, 'Spamming the board.');
-    store.setCurrentMember(admin.id);
-    store.upholdReport(report.id);
-
-    const suspended = store.getState().members.find((m) => m.id === referrer.id)!;
-    expect(suspended.status).toBe('suspended');
-    expect(suspended.openToReferring).toBe(true); // untouched by suspension
-
-    store.setCurrentMember(reporter.id);
-    const availability = store.referralAvailabilityFor(referrer.id, NOW);
-    expect(availability.accepting).toBe(false);
-    expect(availability.reason).toBe('not_open');
+    expect(store.pendingNewSignIn()).toBeNull();
+    expect(store.getCurrentMember()).toBeNull();
   });
 });

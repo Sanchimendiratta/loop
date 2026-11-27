@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { DAY_MS, addDays, daysBetween, startOfDay } from '../src/core/time.ts';
+import { DAY_MS, addDays, dayLabel, daysBetween, startOfDay } from '../src/core/time.ts';
 
 describe('time', () => {
   test('daysBetween counts whole elapsed days', () => {
@@ -26,5 +26,18 @@ describe('time', () => {
     const at = new Date(2026, 8, 16, 17, 45, 30).getTime();
     const start = new Date(startOfDay(at));
     expect([start.getHours(), start.getMinutes(), start.getSeconds()]).toEqual([0, 0, 0]);
+  });
+
+  // Fix wave 3, item 4: `dayLabel` used to be defined identically in
+  // `Admin.tsx`, `MyApplications.tsx` and `MyPosts.tsx`, and duplicated again
+  // as `postAge`'s label branch — one copy here, all four now call it.
+  test('dayLabel reads "today" for the same instant', () => {
+    const t0 = Date.UTC(2026, 8, 17);
+    expect(dayLabel(t0, t0)).toBe('today');
+  });
+
+  test('dayLabel reads "Nd ago" for an elapsed count', () => {
+    const t0 = Date.UTC(2026, 8, 17);
+    expect(dayLabel(t0, t0 + 5 * DAY_MS)).toBe('5d ago');
   });
 });

@@ -13,3 +13,80 @@
 
 html, body, #root { height: 100%; }
 body { @apply bg-stone-100 text-stone-900 antialiased; }
+
+/*
+ * The board's sheet, stacked into label/value pairs below the `md` breakpoint
+ * (Lite §10: "legible at 390px: rows stack ... rather than scrolling
+ * sideways"). The table stays a real <table> at every width — this only
+ * changes layout, not markup — so `<th scope="col">` and the sort buttons
+ * inside it keep announcing column context to a screen reader; sighted
+ * narrow-viewport readers get the `data-label` text as a visual label instead
+ * of a hidden header row. `td.plain` is the escape hatch for the two
+ * full-width expansion rows (apply disclosure, report reason), which are a
+ * single block of copy rather than a label/value pair.
+ */
+@media (max-width: 767px) {
+  .stack-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .stack-table,
+  .stack-table tbody,
+  .stack-table tr {
+    display: block;
+    width: 100%;
+  }
+  /*
+   * Re-assert `hidden` inside the stacked layout. The rule above is an author
+   * rule and `[hidden] { display: none }` is a user-agent rule, so the author
+   * rule wins on ORIGIN regardless of specificity — without this, a `hidden`
+   * row in a stacked table is visible on exactly the devices the stacked
+   * layout exists for. Nothing relies on this today (MyPosts mounts its
+   * applicant panel conditionally instead, which is stronger), but leaving the
+   * trap armed for the next row that reaches for the attribute is how this
+   * recurs.
+   */
+  .stack-table tr[hidden] {
+    display: none;
+  }
+  .stack-table tr {
+    border: 1px solid rgb(231 229 228);
+    border-radius: 0.75rem;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+  }
+  .stack-table td {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgb(245 245 244);
+    text-align: left;
+  }
+  .stack-table td:last-child {
+    border-bottom: 0;
+  }
+  .stack-table td::before {
+    content: attr(data-label);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: rgb(120 113 108);
+  }
+  .stack-table td.plain {
+    display: block;
+    text-align: left;
+  }
+  .stack-table td.plain::before {
+    content: none;
+  }
+}

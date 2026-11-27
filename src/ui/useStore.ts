@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { runClock, subscribe } from '../data/store.ts';
+import { subscribe } from '../data/store.ts';
 
 /*
  * The store mutates in place and notifies, so object identity is not a usable
@@ -18,20 +18,18 @@ export function useStoreVersion(): number {
 }
 
 /**
- * A "now" that advances, and advances the clock with it.
+ * A "now" that advances.
  *
- * Every freshness and nudge reading is a function of the current instant, so a
- * board left open would otherwise show posts frozen at page load — and a post
- * that should have decayed would keep its ranking.
+ * Lite has no clock to run: ageing and staleness are computed at read time by
+ * `core/freshness.ts` and `core/applications.ts`, and no row changes merely
+ * because time passed. But every one of those readings is a function of the
+ * current instant, so a board left open would otherwise show posts frozen at
+ * page load.
  */
 export function useNow(intervalMs = 60_000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => {
-      const t = Date.now();
-      runClock(t);
-      setNow(t);
-    }, intervalMs);
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
     return () => clearInterval(id);
   }, [intervalMs]);
   return now;

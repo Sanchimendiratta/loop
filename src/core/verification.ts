@@ -1,14 +1,24 @@
 /**
- * Membership verification (§6).
+ * Membership verification (Lite §3).
  *
  * D2 makes this the whole product: "a referral network that lets anyone in is
- * LinkedIn." Tier A is a domain fact and is therefore instant. Tier B is a
- * human judgement over a self-declared LinkedIn education entry — §6 is candid
- * that this is a plausibility check, not proof — so every decision carries a
- * reviewer, a timestamp and a reason, and rejection is appealable once.
+ * LinkedIn." An institute address is a domain fact and is therefore instant;
+ * everything else waits for an admin, who decides against a LinkedIn URL plus
+ * batch, programme and an optional "known by". Lite folds the case row into
+ * `member` (there are no appeals to thread), so the decision machinery that
+ * used to live here — `decideCase`, the tier ladder, vouching — now lives in
+ * `data/store.ts`'s `decideVerification`, which is the only thing that can
+ * record a reviewer and notify the member in the same write.
+ *
+ * What is left here is the one judgement that is pure: does this address prove
+ * membership by itself?
  */
-import { VOUCHING_UNLOCK_THRESHOLD } from '../data/schema.ts';
-import type { School, VerificationCase, VerificationTier } from '../data/schema.ts';
+
+/** The one row §7 says stays config rather than a table until a second school exists. */
+export const LOOP_SCHOOL = {
+  name: 'XLRI Jamshedpur',
+  verifiedDomains: ['astra.xlri.ac.in'],
+};
 
 /**
  * Tier A iff the address's domain is exactly an allowlisted one.
@@ -16,8 +26,8 @@ import type { School, VerificationCase, VerificationTier } from '../data/schema.
  * Suffix matching would admit `astra.xlri.ac.in.example.com`, which is the
  * cheapest possible forgery of the one signal we treat as proof.
  */
-export function tierForEmail(email: string, school: School): VerificationTier | null {
-  // Exactly one '@', and the domain is what follows it.
+export function tierForEmail(email: string, school: { verifiedDomains: string[] }): 'A' | null {
+  // Exactly one '@', a non-empty local part, and the domain is what follows it.
   //
   // `split('@')[1]` is NOT the same thing and is a real bypass: for
   // `attacker@astra.xlri.ac.in@evil.com` it returns the allowlisted middle
@@ -25,32 +35,15 @@ export function tierForEmail(email: string, school: School): VerificationTier | 
   // verification to a forged address, on the one signal this product treats as
   // proof. Requiring a single '@' rejects malformed input instead of guessing
   // which part of it to trust.
+  //
+  // The local part is checked for the same reason, not as general address
+  // hygiene: `@astra.xlri.ac.in` has the allowlisted domain but no mailbox, so
+  // it cannot be delivered to and therefore cannot be anyone's institute
+  // address. Granting it instant membership would hand the one unreviewed
+  // route in this product to a string nobody owns.
   const parts = String(email ?? '').trim().toLowerCase().split('@');
   if (parts.length !== 2) return null;
-  const domain = parts[1];
-  if (!domain) return null;
+  const [local, domain] = parts;
+  if (!local || !domain) return null;
   return school.verifiedDomains.some((d) => d.toLowerCase() === domain) ? 'A' : null;
-}
-
-export function decideCase(
-  c: VerificationCase,
-  decision: 'approved' | 'rejected' | 'more_info',
-  reviewerId: string,
-  at: number,
-  notes: string,
-): VerificationCase {
-  return { ...c, decision, reviewerId, decidedAt: at, notes };
-}
-
-/** §6: one appeal, with documentary evidence, reviewed by a second admin. */
-export function canAppeal(c: VerificationCase): boolean {
-  return c.decision === 'rejected' && !c.isAppeal;
-}
-
-export function vouchingUnlocked(verifiedCount: number): boolean {
-  return verifiedCount >= VOUCHING_UNLOCK_THRESHOLD;
-}
-
-export function requiredVouches(): number {
-  return 2;
 }
