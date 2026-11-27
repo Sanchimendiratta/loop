@@ -4,7 +4,8 @@ Read this first if you are a fresh session picking this up.
 
 ## What this is
 
-An implementation of `../XLRI_Referrals_PRD_v1.md` (PRD v1.3): Loop, the XLRI
+An implementation of `XLRI_Referrals_PRD_v1.md` (PRD v1.3 — an external document,
+not included in this repository): Loop, the XLRI
 alumni job-post and referral network. Scope: all of §7.1 Must, with the five
 deltas recorded in §3 below, plus the post→request bridge promoted out of
 §7.2 Should (DL2). Everything else in §7.2 Should, all of §7.3 Could, and all
@@ -17,7 +18,7 @@ Design doc: `docs/superpowers/specs/2026-09-16-loop-design.md`
 ```sh
 npm install
 npm run dev       # http://localhost:5174
-npm run verify    # typecheck + 201 tests + render smoke + production build
+npm run verify    # typecheck + 209 tests + render smoke + production build
 ```
 
 There is one entry point (`index.html`) and one persona switcher standing in
@@ -28,7 +29,7 @@ to show without a second login flow.
 
 ## Done and verified
 
-`npm run verify` is green: **typecheck clean · 201 tests passing across 15
+`npm run verify` is green: **typecheck clean · 209 tests passing across 15
 files · every screen-level component under `src/ui/` renders (16 of 17
 files — `primitives.tsx` is a component library, not a screen; see
 `scripts/smoke.mjs`'s closing note) · production build succeeds.**

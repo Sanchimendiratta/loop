@@ -1,8 +1,9 @@
 # Loop — Implementation Design
 
 Date: 2026-09-16
-Source of truth: `../../../../XLRI_Referrals_PRD_v1.md` (PRD v1.3)
-Sibling product: `../../../../pipelined/` — employer-side, separate app, no shared code.
+Source of truth: `XLRI_Referrals_PRD_v1.md` (PRD v1.3) — an external document, not
+included in this repository. All `§` references below point into it.
+Sibling product: Pipelined — employer-side, a separate app, no shared code.
 
 ## 1. Purpose
 
